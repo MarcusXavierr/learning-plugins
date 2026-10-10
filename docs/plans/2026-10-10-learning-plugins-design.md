@@ -46,7 +46,7 @@ learning-plugins/
 ├── shared/                           # cross-plugin code: tool map, quiz contract
 ├── types/claude-code/                # vendored CC mod types (see Toolchain)
 ├── plugins/<plugin>/                 # SOURCE: the only place anyone edits
-│   ├── manifest.json                 # canonical name, version, description, dependencies
+│   ├── package.json                  # workspace package + canonical manifest: name, version, description, "plugin": {dependencies}
 │   ├── src/core/                     # pure logic: no I/O, no host imports
 │   ├── src/omp.ts                    # omp adapter: default-export ExtensionAPI factory
 │   ├── src/claude.ts                 # CC adapter: `export function register(on, options)`
@@ -116,7 +116,7 @@ Constraints that shape the split:
 
 `md-log` must log the quiz question in the order the user saw it, and the graded outcome, in both harnesses, without parsing prose. Two rules make that possible:
 
-1. **Deterministic shuffle.** Quiz option order is `shuffle(options, seed = toolCallId)`, a pure function both plugins bundle. md-log recomputes the displayed order from the tool-call arguments plus the call id at call time. That lets it write the question live, before the user answers, in both harnesses. This replaces the original's reliance on `tool_execution_update`, which omp does not deliver for extension tools (`md-log.ts:280-282`).
+1. **Deterministic shuffle.** Quiz option order is `displayOrder(options, seed)`, a pure function both plugins bundle. The seed is a hash of the **question content** (question text plus option values), not the tool-call id, because CC's `turn.step` exposes tool uses as `{name, input}` with no id. md-log can therefore recompute the displayed order from the tool arguments alone, live and before the user answers, in both harnesses. `shuffle: false` keeps author order. This replaces the original's reliance on `tool_execution_update`, which omp does not deliver for extension tools (`md-log.ts:280-282`). Asking the identical question twice yields the identical order, which is acceptable.
 2. **Structured result.** The quiz result carries `QuizResultDetails`: status, displayed options, answers, correct indices, `dontKnow`, note, explanation.
    - omp delivers it as the tool result's `details`.
    - CC delivers it as a text block `<quiz-result>{json}</quiz-result>` inside the `result` array. The model sees it too, which is harmless and useful.
@@ -133,7 +133,7 @@ Abstract tool and agent ids resolve per harness. The prompt generator and md-log
 **Core**
 
 - A formatter from normalized entries to markdown.
-  - Entries: `{kind: 'user' | 'assistant' | 'question' | 'answer', …}`.
+  - Entries: `user`, `assistant`, `question` (one per asked question; native ask tools can ask several per call), `quiz-answer`, `ask-answer`.
   - For the same entries, the output is byte-identical in both harnesses, enforced by golden files.
 - Formatting rules are ported from `md-log.ts:84-202`: callouts, skill-block stripping, quiz and ask answer callouts.
 - The assistant heading changes from `PI` to the harness-neutral `AGENT`. The user heading stays `YOU`.
@@ -149,8 +149,9 @@ Abstract tool and agent ids resolve per harness. The prompt generator and md-log
 - Registers commands with `pi.registerCommand` and persists the link with `pi.appendEntry`, restored on `session_start`.
 - User and assistant text come from `message_end`.
 - **Q&A**:
-  - The question is written on `tool_call` for `quiz` (order from the quiz contract) and for the native `ask`.
-  - The answer is written on `tool_result` (quiz `details`; native `ask` result).
+  - The question is written on `tool_call` for `quiz` (order from the quiz contract) and for the native `ask` (input `questions[]`: `{id, question, header?, options[{label, description?}], multi?, recommended?}`, from `@oh-my-pi/pi-coding-agent@18.2.10` `tools/ask.d.ts`).
+  - The answer is written on `tool_result` (quiz `details`; native `ask` details, whose shape lives in `@oh-my-pi/pi-tui` and is captured in md-log's first task).
+  - omp events broadcast to every extension, so hook order between plugins does not matter.
 - Writes read, concatenate, and write the file (as today) under the queue.
 
 **CC adapter**
@@ -158,10 +159,11 @@ Abstract tool and agent ids resolve per harness. The prompt generator and md-log
 - **Commands**: `$.command.register({name: 'md-log', argumentHint: '<filepath>', immediate: true})`, handled by `command.run`. `immediate` means no model turn.
 - **User prompts**: `prompt.submit`, logged after `await next(e)`, so dropped prompts are skipped and rewritten prompts are logged as sent.
 - **Assistant prose**: `turn.step`. The adapter does `const r = yield* next(e)` and logs `r.answer` for each model request. That captures the prose written before tool calls, which `turn.complete` (final answer only) would miss. Steps carrying `agentId` (subagents) are skipped.
-- **Q&A**: one `tool.call` hook matched on `AskUserQuestion` and `mcp__quiz__quiz`.
-  - It writes the question, awaits `next(e)`, and writes the answer from the result.
-  - For quiz, the answer comes from the `<quiz-result>` block. For `AskUserQuestion`, it comes from `result.answers`, a map from question to label.
-  - Calls carrying `agentId` are skipped.
+- **Q&A**, independent of mod order.
+  - CC hooks form one middleware chain, and among user-installed mods only `dependencies` orders it. A `tool.call` observer in md-log would never see quiz calls whenever `quiz` sits earlier in the chain and answers without `next`. md-log therefore does not hook `tool.call`.
+  - **Question**: the same `turn.step` hook inspects `r.toolUses` for `AskUserQuestion` and `mcp__quiz__quiz`, and writes the question blocks from their inputs. This happens before the tools execute, so the question appears live.
+  - **Answer**: those uses are kept as pending. At the next `turn.step` start, and at `turn.complete`, md-log reads `$.session.messages()` and takes the results of the pending uses from the latest assistant message's `toolUses[].result`, matched by tool name and input in order. For quiz, the answer comes from the `<quiz-result>` block. For `AskUserQuestion`, it comes from `result.answers`, a map from question to label.
+  - Steps carrying `agentId` are skipped.
 - **Backfill**: `$.session.messages()` (`{role, text, toolUses, toolResults}`), with Q&A paired from `toolUses`/`toolResults`.
 - **Writes**: `$.fs.write` has no append, is not atomic, and rejects anything over 4 MiB. The adapter reads, concatenates, and writes under the queue. At the 4 MiB cap it unlinks the note and shows a toast saying why. This is a deliberate divergence from omp, which has no cap.
 
@@ -360,6 +362,6 @@ From docs and types:
 |---|---|---|
 | 1 | Does omp, started inside `learning-plugins/`, also load `../.omp/config.yml`? If so, old and new tools collide (`quiz` twice). | skeleton |
 | 2 | What props does the CC `ToolUse` render site receive (is the tool result available) to draw quiz feedback? | quiz |
-| 3 | What are the exact `tool_call`/`tool_result` payloads of omp's native `ask`? Capture them from a real session before writing md-log's mapping. | md-log |
-| 4 | Does omp's `tool_call` event carry the tool-call id that the quiz contract seeds the shuffle with? | md-log |
+| 3 | What is the exact `tool_result` `details` of omp's native `ask`? Capture it from a real session before writing md-log's mapping. | md-log |
+| 4 | Does CC's `ToolUseSummary.result` (from `$.session.messages()`) hold the quiz `result` array and `AskUserQuestion`'s `{answers}` as returned? The skeleton's `hello` plugin captures both. | skeleton |
 | 5 | How big is the renderer install, and how long does the first `npm ci` take? | visual-tools |
