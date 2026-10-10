@@ -1,7 +1,7 @@
 # learning-plugins: design
 
 Date: 2026-10-10
-Status: approved in a grill session; implementation not started.
+Status: approved in a grill session, then hardened by a staff-engineer review. Implementation not started.
 
 ## Goal
 
@@ -18,28 +18,33 @@ pi itself is not a target.
 
 | Plugin | Contents | Port of |
 |---|---|---|
-| `md-log` | `/md-log <file>`, `/md-unlog`: mirrors the session (user prompts, assistant prose, question/answer blocks) into a markdown file | `.pi/extensions/md-log.ts` |
+| `md-log` | `/md-log <file>`, `/md-unlog`: mirrors the session (user prompts, assistant prose, question/answer blocks) into a markdown note | `.pi/extensions/md-log.ts` |
 | `quiz` | Graded multiple-choice tool: shuffled options, "I don't know", free-text note, ✓/✗ with explanation | `.pi/extensions/quiz.ts` |
 | `visual-tools` | `write_/edit_/render_` tools for Mermaid and SVG, plus the `mermaid-maker` and `svg-maker` agents and the `visualize` skill | `.pi/extensions/visual-tools/`, `.omp/agents/*-maker.md`, `.pi/skills/visualize` |
 | `teach` | The `teach` skill and the `researcher` agent | `.pi/skills/teach`, `.omp/agents/researcher.md` |
 
 `ask-user-question` is dropped. Both harnesses ship a native question tool (`ask` in omp, `AskUserQuestion` in CC), and the features unique to the custom tool (a free-text-only mode, `details`, `value`) are not worth a second question tool competing with the native one.
 
-`teach` uses `quiz` and `md-log`. CC declares this through `dependencies` in `plugin.json`. omp has no inter-plugin dependencies, so the README lists the full install command.
+`teach` uses `quiz` and `md-log`:
+
+- **CC** declares this through `dependencies` in `plugin.json`.
+- **omp** has no inter-plugin dependencies, so the README lists the full install command. Nothing more, by decision.
+- **CC dogfooding** passes all three directories (`--plugin-dir` for teach, quiz, and md-log), because `--plugin-dir` alone does not resolve dependencies.
 
 ## Repository layout
 
-There is one source of truth per plugin. The build writes two distribution trees, and each harness reads only its own tree through its own catalog.
+There is one source of truth per plugin. One deterministic build writes two complete distribution trees plus both catalogs, and each harness reads only its own tree through its own catalog.
 
 ```
 learning-plugins/
-├── .claude-plugin/marketplace.json   # CC catalog   → ./dist/claude/<plugin>
-├── .omp-plugin/marketplace.json      # omp catalog  → ./dist/omp/<plugin>
-├── package.json                      # npm workspaces, scripts
+├── .claude-plugin/marketplace.json   # GENERATED CC catalog   → ./dist/claude/<plugin>
+├── .omp-plugin/marketplace.json      # GENERATED omp catalog  → ./dist/omp/<plugin>
+├── package.json, package-lock.json   # npm workspaces, scripts, pinned dev deps
 ├── tsconfig.base.json
 ├── vitest.config.ts
 ├── build/                            # build + generator code (TypeScript, tested)
-├── shared/                           # cross-plugin constants (abstract tool ids, names)
+├── shared/                           # cross-plugin code: tool map, quiz contract
+├── types/claude-code/                # vendored CC mod types (see Toolchain)
 ├── plugins/<plugin>/                 # SOURCE: the only place anyone edits
 │   ├── manifest.json                 # canonical name, version, description, dependencies
 │   ├── src/core/                     # pure logic: no I/O, no host imports
@@ -47,18 +52,20 @@ learning-plugins/
 │   ├── src/claude.ts                 # CC adapter: `export function register(on, options)`
 │   ├── prompts/agents/*.md           # canonical agents (placeholders + per-harness overrides)
 │   ├── prompts/skills/<skill>/SKILL.md
-│   └── test/                         # vitest + CC mod tests
+│   └── test/                         # vitest; test/claude/*.test.ts for the CC test kit
 └── dist/                             # GENERATED, committed (marketplaces install from git)
     ├── claude/<plugin>/
     │   ├── .claude-plugin/plugin.json
     │   ├── hooks/hooks.json          # {"modules": ["./register.js"]}
     │   ├── hooks/register.js         # esbuild bundle of src/claude.ts
-    │   ├── agents/  skills/          # CC flavour
+    │   └── agents/  skills/          # CC flavour
     └── omp/<plugin>/
         ├── package.json              # "omp": { "extensions": ["./extension.js"] }
         ├── extension.js              # esbuild bundle of src/omp.ts
-        ├── agents/  skills/          # omp flavour
+        └── agents/  skills/          # omp flavour
 ```
+
+`visual-tools` also ships `renderer/` in both trees (see its section).
 
 Why two trees: both harnesses read `agents/` and `skills/` from the plugin root, and the agent and skill text differs per harness (tool names, models, dispatch syntax). The omp docs support a dual catalog explicitly (`omp://marketplace.md`): *"A repository may ship both: omp reads the `.omp-plugin/` copy, Claude Code reads the `.claude-plugin/` copy."* Each tree also stays free of files the other harness would misread. omp never sees `hooks/hooks.json`, and CC never sees `package.json#omp`.
 
@@ -74,13 +81,14 @@ omp plugin install md-log@learning-plugins
 
 ## Toolchain
 
-- **Node 24.15.0** (`.nvmrc`) and npm workspaces. No bun in the repo. omp happens to run extensions under bun, but that is the host's concern.
+- **Node 24.15.0** (`.nvmrc`), npm workspaces, a committed `package-lock.json`, and exact-pinned versions. No bun in the repo. omp happens to run extensions under bun, but that is the host's concern.
 - **TypeScript strict** with `tsc --noEmit` against the real host types:
-  - CC: `claude-code.d.ts`, the version-matched copy Claude Code writes locally.
-  - omp: `@oh-my-pi/pi-coding-agent`, pinned to the installed omp version.
-- **esbuild**, driven from `build/`. It bundles each adapter into one ESM file. Host packages (`@oh-my-pi/*`, `@sinclair/typebox`) stay external. Bundling is what lets plugins share code from `shared/` even though every installed plugin is copied in isolation.
-- **Vitest** for core, adapters (omp), the generator, and the build.
-- **`claude plugin test`** for CC mod adapters in the real mod runtime. It works without a login.
+  - **CC**: the declaration files Claude Code writes into `.claude-plugin/types/` when it loads a mod from `--plugin-dir` interactively. They are version-matched, unlike the public GitHub copy, which is 2.1.277. We vendor them into `types/claude-code/` and refresh them with a script.
+  - **omp**: `@oh-my-pi/pi-coding-agent`, pinned to the installed omp version (18.2.10).
+- **esbuild**, driven from `build/`. It bundles each adapter into one ESM file. Host packages (`@oh-my-pi/*`, `@sinclair/typebox`) stay external. Bundling is required on CC, where a hooks module may import only relative files plus the bare `claude-code` specifier. It also lets plugins share `shared/`, even though every installed plugin is copied in isolation.
+- **Vitest** for core, the omp adapter, the generator, and the build.
+- **`claude plugin test`** (the CC test kit) for the CC adapter. It runs without a login. The build copies each plugin's `test/claude/` into an ephemeral, git-ignored copy of its built tree (`.test-build/claude/<plugin>`) and runs the kit there. Committed `dist/` stays test-free.
+- **`claude plugin validate --strict`** on every `dist/claude/*`: warnings fail the build.
 
 ## Adapter contract
 
@@ -90,89 +98,172 @@ omp plugin install md-log@learning-plugins
 2. Perform I/O with the host's own primitives: `node:fs`/`child_process` in omp; `$.fs`, `$.process`, `$.ui` in CC.
 3. Translate core outputs into host results.
 
-Two constraints shape this split:
+Constraints that shape the split:
 
-- **The CC mod runtime has no Node APIs** (no `node:fs`, `setTimeout`, or global `fetch`). Every side effect goes through `$`. Core must therefore never touch I/O.
-- **UI cannot be shared.** omp draws imperative, line-based TUI (`ctx.ui.custom`, `Editor`). CC mods return declarative element trees (`Box`, `Text`, `Button`, `Select`, `Input`). Interaction state lives in a core reducer, and each harness has its own render function over that state.
+- **The CC mod runtime has no Node APIs** (no `node:fs`, `setTimeout`, or global `fetch`). Every side effect goes through `$`. Core never touches I/O.
+- **CC static analysis**: `claude plugin validate` must see every `$` call.
+  - `$` may only be passed to top-level functions in the same file, and never assigned or destructured.
+  - Event names must be string literals.
+  - No dynamic `import()`.
+  - So every `$` call lives in `src/claude.ts`, and core never receives `$`. Validating the bundled output with `--strict` enforces this.
+- **CC hook time budget**: a hook gets 10 s of its own execution time. Time inside `next(e)` and inside mods API calls (except `$.clock.sleep`) is exempt, but awaiting a Promise of our own counts. Any wait for the user must therefore sit inside a mods API call.
+- **UI cannot be shared.** omp draws imperative, line-based TUI (`ctx.ui.custom`, `Editor`). CC mods return declarative element trees or use the native dialog. Interaction state lives in core, and each harness renders it its own way.
+- **Observers never break the session**: they catch everything, report, and pass through `next(e)`.
+
+## Shared contracts
+
+### Quiz contract (`shared/quiz-contract.ts`)
+
+`md-log` must log the quiz question in the order the user saw it, and the graded outcome, in both harnesses, without parsing prose. Two rules make that possible:
+
+1. **Deterministic shuffle.** Quiz option order is `shuffle(options, seed = toolCallId)`, a pure function both plugins bundle. md-log recomputes the displayed order from the tool-call arguments plus the call id at call time. That lets it write the question live, before the user answers, in both harnesses. This replaces the original's reliance on `tool_execution_update`, which omp does not deliver for extension tools (`md-log.ts:280-282`).
+2. **Structured result.** The quiz result carries `QuizResultDetails`: status, displayed options, answers, correct indices, `dontKnow`, note, explanation.
+   - omp delivers it as the tool result's `details`.
+   - CC delivers it as a text block `<quiz-result>{json}</quiz-result>` inside the `result` array. The model sees it too, which is harmless and useful.
+   - md-log parses only this block.
+
+### Tool map (`shared/tool-map.ts`)
+
+Abstract tool and agent ids resolve per harness. The prompt generator and md-log both use this map.
 
 ## Plugin designs
 
 ### md-log
 
-- **Core**: a formatter from normalized entries to markdown.
+**Core**
+
+- A formatter from normalized entries to markdown.
   - Entries: `{kind: 'user' | 'assistant' | 'question' | 'answer', …}`.
-  - The formatter is pure, so output is byte-identical in both harnesses, enforced by golden files.
-- **omp adapter**:
-  - Registers commands with `pi.registerCommand`.
-  - Hooks `tool_call` (question) and `tool_result` / `tool_execution_update` (answer) for `quiz` and the native `ask`.
-  - Writes with `fs.appendFile`.
-- **CC adapter**:
-  - `$.command.register({name: 'md-log', argumentHint: '<filepath>', immediate: true})` handled by `command.run`. `immediate` means no model turn.
-  - Backfill comes from `$.session.messages()`.
-  - User prompts are observed on `prompt.submit`, assistant prose on `turn.complete` (`e.answer`).
-  - Q&A uses one `tool.call` hook matched on `AskUserQuestion` and `mcp__quiz__quiz`: write the question, `await next(e)`, write the answer, return the result.
-  - `$.fs.write` has no append and caps files at 4 MiB, so the adapter reads, concatenates, and writes. Past the cap it stops logging and says so in a toast instead of failing the session.
+  - For the same entries, the output is byte-identical in both harnesses, enforced by golden files.
+- Formatting rules are ported from `md-log.ts:84-202`: callouts, skill-block stripping, quiz and ask answer callouts.
+- The assistant heading changes from `PI` to the harness-neutral `AGENT`. The user heading stays `YOU`.
+
+**Shared behaviour**
+
+- `/md-log <file>` links an existing file only; it never creates one. It refuses while the agent is busy, then backfills the current conversation by **overwriting** the file, exactly as the original does.
+- After linking, live events append in order through one in-session serialized write queue.
+- **One writer per note** is a documented constraint, as in the original: two sessions logging to the same note can interleave.
+
+**omp adapter**
+
+- Registers commands with `pi.registerCommand` and persists the link with `pi.appendEntry`, restored on `session_start`.
+- User and assistant text come from `message_end`.
+- **Q&A**:
+  - The question is written on `tool_call` for `quiz` (order from the quiz contract) and for the native `ask`.
+  - The answer is written on `tool_result` (quiz `details`; native `ask` result).
+- Writes read, concatenate, and write the file (as today) under the queue.
+
+**CC adapter**
+
+- **Commands**: `$.command.register({name: 'md-log', argumentHint: '<filepath>', immediate: true})`, handled by `command.run`. `immediate` means no model turn.
+- **User prompts**: `prompt.submit`, logged after `await next(e)`, so dropped prompts are skipped and rewritten prompts are logged as sent.
+- **Assistant prose**: `turn.step`. The adapter does `const r = yield* next(e)` and logs `r.answer` for each model request. That captures the prose written before tool calls, which `turn.complete` (final answer only) would miss. Steps carrying `agentId` (subagents) are skipped.
+- **Q&A**: one `tool.call` hook matched on `AskUserQuestion` and `mcp__quiz__quiz`.
+  - It writes the question, awaits `next(e)`, and writes the answer from the result.
+  - For quiz, the answer comes from the `<quiz-result>` block. For `AskUserQuestion`, it comes from `result.answers`, a map from question to label.
+  - Calls carrying `agentId` are skipped.
+- **Backfill**: `$.session.messages()` (`{role, text, toolUses, toolResults}`), with Q&A paired from `toolUses`/`toolResults`.
+- **Writes**: `$.fs.write` has no append, is not atomic, and rejects anything over 4 MiB. The adapter reads, concatenates, and writes under the queue. At the 4 MiB cap it unlinks the note and shows a toast saying why. This is a deliberate divergence from omp, which has no cap.
 
 ### quiz
 
-- **Core**:
-  - Option normalization.
-  - Shuffle with an injected RNG, so tests are deterministic.
-  - Validation of `correctAnswer` by option value, including the stringified-array repair from the original.
-  - A reducer for the interaction: navigate, toggle, "I don't know", note, submit, cancel.
-  - Grading, and the result text returned to the model.
-- **omp adapter**:
-  - `pi.registerTool('quiz')`.
-  - A `ctx.ui.custom` component whose `render(width)` is a pure function of reducer state plus theme.
-  - Quiz calls are serialized with a module-level mutex.
-- **CC adapter**:
-  - `$.tool.register({name: 'quiz'})`, which the model sees as `mcp__quiz__quiz`.
-  - The `tool.call` handler opens its own Pane with `$.ui.open({id: 'quiz', focus: true, closeOnEscape: true})`.
-  - `ui.render` (`{component: 'Pane'}`) draws reducer state as elements, and button `onPress` dispatches actions.
-  - The handler awaits a module-owned Promise that resolves on submit or cancel, then closes the Pane and returns `{result}`.
+**Core**
+
+- Option normalization and validation:
+  - `correctAnswer` is matched by option value, including the stringified-array repair from the original (`quiz.ts:158-175`).
+  - Duplicate values are rejected.
+- The quiz-contract shuffle.
+- Grading: single and multi-select, "I don't know", and a note.
+- Building `QuizResultDetails` and the model-facing result text.
+- The omp interaction reducer: navigate, toggle, "I don't know", note, submit, cancel.
+
+**omp adapter**
+
+- `pi.registerTool('quiz')`, with the same TUI as today rebuilt on the core reducer.
+- `ctx.ui.custom` with `render(width)` as a pure function of state plus theme.
+- Quiz calls are serialized with a module-level mutex.
+- The result carries `details`.
+
+**CC adapter**
+
+- **Registration**: `$.tool.register({name: 'quiz'})`, which the model sees as `mcp__quiz__quiz`. The `tool.call` handler asks with **`$.ui.ask`**, the native dialog, because waiting inside a mods API call is exempt from the 10 s budget. A Pane is not viable for a model-initiated question: awaiting our own Promise counts against the budget, and a pane the user didn't open is placed only at ≥ 144 columns.
+- **The dialog**:
+  - `header: 'Quiz'`.
+  - Options are the shuffled labels plus `I don't know`.
+  - `multiSelect` for multi-answer quizzes, whose answer comes back comma-joined.
+- **CC-specific limits, from the dialog's 2–4 options**:
+  - At most 3 real options. The CC tool schema says so, and the generator emits it.
+  - In multi-select, option labels must not contain `,`, or the answer would be ambiguous.
+- **Typed "Other" text**: graded as `dontKnow: true` with the text as the note. The user answered in their own words instead of choosing.
+- **Dismissal**: `$.ui.ask` rejects on dismissal or "Chat about this", which counts as `cancelled`. In a non-interactive session (from `session.start`'s `isInteractive`) it counts as `unavailable`.
+- **Feedback to the user**: the result text (✓/✗, correct answer, explanation) appears in the transcript. A `ui.render` override for the `ToolUse` site, to draw that feedback nicely, is an optional enhancement gated on open question 2.
 
 ### visual-tools
 
-- **Core**:
-  - Session state for the managed source file.
-  - Exact-match edit semantics.
-  - Unique publish names.
-  - The argv for the renderer.
-- **Rendering** runs in a small Node CLI, `render.js`, bundled into both trees:
-  - Mermaid goes through `@mermaid-js/mermaid-cli` using the system Chrome (`PUPPETEER_SKIP_DOWNLOAD=1`, puppeteer `executablePath`).
-  - SVG goes through `@resvg/resvg-js`, which needs no Chrome and no system binaries.
-- **Why a CLI**: the CC mod cannot import npm packages that need Node (no Node APIs), but it can run `$.process.run(['node', render.js, …])`. omp calls the same CLI through `child_process`. One renderer serves both.
-- **Lazy install**:
-  - On first render, the CLI installs its dependencies into `${XDG_CACHE_HOME:-~/.cache}/learning-plugins/visual-tools` with `npm install --omit=optional`.
-  - It reinstalls only when the pinned versions change, so users who never draw never download.
-  - The "is the install current?" decision is a pure core function.
-- **Image return**:
-  - omp returns `{type: 'image', data, mimeType}` content.
-  - The CC tool's `result` must be an array of Anthropic API blocks: `[{type: 'text', text}, {type: 'image', source: {type: 'base64', media_type: 'image/png', data}}]` (verified, below).
-- **Publish**: the PNG is copied to `<cwd>/viz/` with a unique name, for Obsidian, as today.
+**Core**
+
+- Per-key session state: the managed source file for Mermaid and for SVG.
+- Exact-match edit semantics: the target must match exactly once.
+- Unique publish names.
+- Renderer argv.
+- The "is the renderer install current?" decision.
+
+**State keying**
+
+- omp: each maker subagent runs in its own process, as today.
+- CC: one module serves every agent loop, so state is keyed by the tool call's `agentId` (`main` when absent). Read-modify-write and render are serialized per key.
+
+**Renderer**
+
+`renderer/` ships in both trees and holds `render.js` (a bundled Node CLI), `package.json`, and `package-lock.json`. The last two pin `@mermaid-js/mermaid-cli` and `@resvg/resvg-js`.
+
+- **Lazy install**: on first render, the CLI runs `npm ci` from that lockfile into `${XDG_CACHE_HOME:-~/.cache}/learning-plugins/visual-tools/<lock-hash>/`.
+  - **No `--omit=optional`**: resvg's platform binaries are optional dependencies.
+  - The CLI loads the renderers with `createRequire` anchored at that cache directory, not by ancestor lookup from the plugin tree.
+  - Users who never draw never download.
+- **Mermaid** uses the system Chrome (`PUPPETEER_SKIP_DOWNLOAD=1`, puppeteer `executablePath`), as today.
+- **SVG** goes through resvg, with no Chrome and no system binaries.
+- **Protocol**: `node render.js --kind mermaid|svg --in <abs> --out <abs>`.
+  - Exit 0 means the PNG exists at `--out`.
+  - Non-zero means the stderr tail is the error.
+  - Stdout is never used for image data.
+- **omp** runs the CLI through `child_process`.
+- **CC** runs it through `$.process.run` with explicit `timeoutMs`: 600 000 when an install may happen, 120 000 for a render. It reads the PNG with `$.fs.read(out, {as: 'bytes'})`, and a PNG over 4 MiB is an error.
+
+**Image return**
+
+- omp: `{type: 'image', data, mimeType}` content.
+- CC: the tool's `result` must be an array of Anthropic API blocks, `[{type: 'text', text}, {type: 'image', source: {type: 'base64', media_type: 'image/png', data}}]` (verified, below).
+
+**Publish**
+
+- The PNG is copied to `<cwd>/viz/` for Obsidian, as today.
+- The name gets a random suffix, and the file is created with an exclusive create.
 
 ### teach
 
-Only prompts: the `teach` skill and the `researcher` agent, run through the generator.
+Prompts only: the `teach` skill and the `researcher` agent, run through the generator.
 
 ## Prompt generator
 
-Agents and skills are written once with harness-neutral placeholders and per-harness frontmatter overrides:
+Agents and skills are written once, in harness-neutral form, with per-harness frontmatter overrides:
 
 ```markdown
 ---
 name: researcher
 description: Web researcher; searches the web and synthesizes findings
-tools: [web_search, web_fetch]          # abstract tool ids
+tools: [web_search, web_fetch]          # abstract ids → per-harness allowlist
 model:
   omp: openai-codex/gpt-6-sol, zai/glm-5.3
   claude: sonnet
 ---
 Confirm facts before asserting them. For graded checks use {{tool:quiz}};
-for open questions use {{tool:ask}}. To draw, {{dispatch:mermaid-maker}}.
+for open questions use {{tool:ask}}.
+
+{{dispatch:visual-tools/mermaid-maker|<your minimal, concrete brief>}}
 ```
 
-A tool map in `shared/` resolves abstract ids per harness:
+**Tool map**
 
 | Abstract id | omp | CC |
 |---|---|---|
@@ -182,30 +273,45 @@ A tool map in `shared/` resolves abstract ids per harness:
 | `web_fetch` | `read` | `WebFetch` |
 | `write_svg` and the other visual tools | `write_svg` | `mcp__visual-tools__write_svg` |
 
-`{{dispatch:x}}` renders as each harness's subagent call (`task` in omp, `Agent` in CC). An unknown placeholder, tool id, or a missing per-harness model fails the build.
+**Agent identity**
+
+| Abstract | omp | CC |
+|---|---|---|
+| `visual-tools/mermaid-maker` | `mermaid-maker` | `visual-tools:mermaid-maker` |
+
+**Placeholder rules**
+
+- `{{dispatch:agent|brief}}` expands to a complete, runnable invocation example in each harness's syntax:
+  - omp: the `task` tool with `agent: "mermaid-maker"`.
+  - CC: the `Agent` tool with `subagent_type: "visual-tools:mermaid-maker"`.
+- Frontmatter `tools:` is mapped to the harness allowlist, and `model` must have an entry for each harness.
+- These fail the build:
+  - an unknown placeholder, tool id, or agent id;
+  - a missing per-harness model;
+  - a legacy literal left in the source: `ask_user_question`, `subagent(`, `web_fetch` outside a placeholder.
 
 ## Error handling
 
-- **Observers** (md-log hooks) never break the session. In CC they catch, report via `$.ui.toast`/`$.ui.log`, and always pass through `next(e)`. In omp they catch and `ctx.ui.notify`.
-- **Tool handlers** return model-readable errors. In omp that is error text content. In CC it is `{result: '<message>', isError: true}`. `claude plugin validate` flags gating hooks without error handling, and the build treats its warnings as failures.
-- **Bad tool input** (a quiz `correctAnswer` matching no option, an edit target that doesn't match exactly once) is a hard error with an actionable message, never a silent fallback.
-- **Render failures** return the renderer's stderr tail so the maker agent can fix its source, matching the current behaviour.
-- **Lazy install failure** returns the exact manual command to run.
+- **Observers** (md-log hooks) never break the session. In CC they catch, report via `$.ui.toast`, and always pass through `next(e)`. In omp they catch and `ctx.ui.notify`.
+- **Tool handlers** return model-readable errors: error text content in omp, `{result: '<message>', isError: true}` in CC. Every gating CC hook has a `.catch`, enforced by `validate --strict`.
+- **Bad tool input** is a hard error with an actionable message, never a silent fallback. Examples: a quiz `correctAnswer` matching no option, too many options for CC, a comma in a CC multi-select label, an edit target not matching exactly once.
+- **Render failures** return the renderer's stderr tail so the maker agent can fix its source, as today.
+- **Lazy install failure** returns the exact manual command, and the next render retries the install.
 
 ## Testing
 
 | Layer | Tool | What it proves |
 |---|---|---|
-| Core | Vitest | Behaviour: formatting (golden files), grading, shuffling, reducers, edit semantics, install-staleness decisions |
+| Core | Vitest | Behaviour: formatting (golden files), grading, the shuffle contract, reducers, edit semantics, install-staleness decisions |
 | omp adapter | Vitest + fake `ExtensionAPI` | Events in → files written / tool results out |
-| CC adapter | `claude plugin test` on the built tree | The same, in the real mod runtime |
-| Generator | Vitest + golden files | Each harness's agent/skill output; build errors on bad placeholders |
-| Build | `npm run check` | `dist/` equals a fresh build (no stale commits); `claude plugin validate` passes |
-| Smoke | Manual, per plugin | Install from the local marketplace in both harnesses and exercise the feature |
+| CC adapter | `claude plugin test` on `.test-build/` | Hook behaviour in the real mod engine. `$.fs`, `$.process`, `$.ui` are stubbed: this proves logic and wiring, not real I/O |
+| Generator | Vitest + golden files | Each harness's agent/skill output; build errors on bad placeholders and legacy literals |
+| Build | `npm run check` | A clean build reproduces `dist/` and both catalogs byte for byte; `validate --strict` passes |
+| E2E / smoke | Real harness sessions | Install from the local marketplace in both harnesses and exercise each plugin's critical path, including a renderer install from an empty cache and real writes to a note |
 
 Development is test-first. A test earns its place only if a plausible bug would fail it.
 
-**CI** (GitHub Actions, Node 24.15.0) runs `npm ci`, `tsc`, `vitest`, the `dist/` freshness check, and `claude plugin validate` + `claude plugin test` for every `dist/claude/*`.
+**CI** (GitHub Actions, Node 24.15.0) runs `npm ci`, `tsc`, `vitest`, the `dist/` freshness check, and `claude plugin validate --strict` + `claude plugin test` for every plugin.
 
 ## Delivery order
 
@@ -218,7 +324,7 @@ Development is test-first. A test earns its place only if a plausible bug would 
 4. **visual-tools**.
 5. **teach**.
 
-**Dogfooding**: as each plugin lands, it is used from sessions in this repo via `omp plugin link dist/omp/<plugin>` and `claude --plugin-dir dist/claude/<plugin>`. `../.pi` and `../.omp` are never modified or deleted.
+**Dogfooding**: as each plugin lands, it is used from sessions in this repo via `omp plugin link dist/omp/<plugin>` and `claude --plugin-dir dist/claude/<plugin>` (plus its dependencies). `../.pi` and `../.omp` are never modified or deleted.
 
 ## Verified facts
 
@@ -229,23 +335,31 @@ Spike in `/tmp/mod-image-spike`, Claude Code 2.1.296, real `claude -p` sessions:
 - A mod's hooks module can import relative files outside `hooks/` (`../core/label.ts`).
 - `claude plugin test` runs without authentication.
 
-From docs:
+From docs and types:
 
-- Mods need Claude Code ≥ 2.1.287.
-- Mod hooks get 10 s of their own execution time; time spent inside `next` or `$` calls does not count, except `$.clock.sleep`.
-- omp loads `package.json#omp.extensions` on marketplace installs.
-- omp does not read `hooks/hooks.json`.
-- omp has no inter-plugin dependencies.
-- omp prefers `.omp-plugin/marketplace.json` over `.claude-plugin/marketplace.json`.
+- **CC mods, versions and budget**:
+  - Mods need Claude Code ≥ 2.1.287.
+  - A hook's 10 s budget excludes `next` and mods API calls except `$.clock.sleep`, and includes awaiting one's own Promise.
+  - A pane the user didn't open is placed at ≥ 144 columns.
+- **CC API surface**:
+  - `$.ui.ask(question, {options (2–4), header, multiSelect})` resolves to the label, comma-joined for multi-select. Typed text comes back as-is. It rejects on dismissal or in `-p`.
+  - `$.process.run` takes `{cwd, env, stdin, timeoutMs}`.
+  - `$.fs.read(path, {as: 'bytes'})` exists, and reads and writes are capped at 4 MiB.
+  - `tool.call` carries `tool_use_id` and, in a subagent, `agentId`.
+  - CC test files (`*.test.ts`) may live anywhere in the plugin dir.
+  - `claude plugin validate --strict` turns warnings into errors.
+- **omp**:
+  - omp loads `package.json#omp.extensions`, `agents/`, and `skills/` on marketplace installs.
+  - omp does not read `hooks/hooks.json`.
+  - omp has no inter-plugin dependencies.
+  - omp prefers `.omp-plugin/marketplace.json` over `.claude-plugin/marketplace.json`.
 
 ## Open questions
 
 | # | Question | Resolve in |
 |---|---|---|
 | 1 | Does omp, started inside `learning-plugins/`, also load `../.omp/config.yml`? If so, old and new tools collide (`quiz` twice). | skeleton |
-| 2 | Where must `claude plugin test` test files live relative to the plugin dir, and how do we keep them out of the committed `dist/claude` tree? | skeleton |
-| 3 | What name does CC give plugin agents in `Agent` dispatch (`visual-tools:mermaid-maker`?) | skeleton |
-| 4 | Does awaiting user input in a CC Pane count against the 10 s hook budget? Needs an interactive session; `-p` draws no UI. | quiz |
-| 5 | What are the event and result shapes of omp's native `ask` tool, for md-log? | md-log |
-| 6 | Does `$.process.run` accept a timeout long enough for the first lazy install? | visual-tools |
-| 7 | How big is mermaid-cli with `--omit=optional`? | visual-tools |
+| 2 | What props does the CC `ToolUse` render site receive (is the tool result available) to draw quiz feedback? | quiz |
+| 3 | What are the exact `tool_call`/`tool_result` payloads of omp's native `ask`? Capture them from a real session before writing md-log's mapping. | md-log |
+| 4 | Does omp's `tool_call` event carry the tool-call id that the quiz contract seeds the shuffle with? | md-log |
+| 5 | How big is the renderer install, and how long does the first `npm ci` take? | visual-tools |
