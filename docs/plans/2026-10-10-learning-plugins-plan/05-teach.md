@@ -69,6 +69,7 @@ Researcher agent: body from `.pi/agents/researcher.md` (which `.omp/agents/resea
   }
 }
 ```
+After writing the manifest, run `npm install` from the repo root. It registers `@learning-plugins/teach` as a workspace in the root `package-lock.json`; inspect the lock diff and keep it with the manifest. Without this step, the clean-clone `npm ci` in CI rejects the out-of-sync lock.
 
 `plugin.dependencies` becomes `dependencies` in `dist/claude/teach/.claude-plugin/plugin.json`; bare names resolve in the plugin's own marketplace (`/tmp/pref.md:208-210`; https://code.claude.com/docs/en/plugins/dependencies.md, "Declare a dependency with a version constraint"). No version ranges: those resolve against `<plugin>--v<version>` git tags we don't publish.
 
@@ -328,7 +329,7 @@ Expected: `Linked @learning-plugins/teach from dist/omp/teach`; the print run en
 **Step 12: Commit**
 
 ```bash
-git add plugins/teach shared/tool-map.ts dist .claude-plugin .omp-plugin
+git add plugins/teach shared/tool-map.ts package-lock.json dist .claude-plugin .omp-plugin
 git commit -m "feat(teach): add teach skill and researcher agent"
 ```
 
@@ -498,7 +499,7 @@ The agent opens with a few quick quizzes to find the edge of what you know, then
 
 **quiz in Claude Code** asks through Claude Code's own question dialog, which shapes it: at most three options plus "I don't know", no commas in option labels when several answers can be picked, and option descriptions are not shown. If you type your own answer under "Other", it is graded as "I don't know" and your text is kept as the note. Dismissing the dialog cancels the quiz, and in `claude -p` the tool reports that it can't ask.
 
-**visual-tools** installs its renderer the first time something is drawn: about 450 MB into `${XDG_CACHE_HOME:-~/.cache}/learning-plugins/visual-tools/<hash>/`, roughly 40 seconds once. It needs `node` (22.13 or later) and `npm` on your `PATH`. Mermaid renders through your installed Chrome or Chromium, found at the usual macOS and Linux locations or wherever `PUPPETEER_EXECUTABLE_PATH` points; SVG needs no browser. Finished pictures are copied to `viz/` in the session's directory under a new name each time, so nothing is overwritten. Deleting the cache directory is safe: the next drawing installs again. An update that changes the renderer's dependencies installs into a new `<hash>` directory and leaves the old one for you to delete.
+**visual-tools** installs its renderer the first time something is drawn, into `${XDG_CACHE_HOME:-~/.cache}/learning-plugins/visual-tools/<hash>/`. The size on disk, npm-cache overhead and first-install timing measured during Phase 4 are recorded in the [design doc's open question 5 answer](docs/plans/2026-10-10-learning-plugins-design.md#open-questions-all-resolved); actual time and space vary by machine and cache state. It needs `node` (22.13 or later) and `npm` on your `PATH`. Mermaid renders through your installed Chrome or Chromium, found at the usual macOS and Linux locations or wherever `PUPPETEER_EXECUTABLE_PATH` points; SVG needs no browser. Finished pictures are copied to `viz/` in the session's directory under a new name each time, so nothing is overwritten. Deleting the cache directory is safe: the next drawing installs again. An update that changes the renderer's dependencies installs into a new `<hash>` directory and leaves the old one for you to delete.
 
 ## Develop
 
@@ -548,6 +549,7 @@ Cross-check the facts it states against the plugins as built, and fix the README
 - `grep -rn "PUPPETEER_EXECUTABLE_PATH\|learning-plugins/visual-tools" plugins/visual-tools/src` finds the Chrome override and the cache path.
 - `grep -rn "4 \* 1024 \* 1024\|4194304" plugins/md-log/src` finds the CC note cap.
 - `grep -n '"engines"\|22.13' plugins/visual-tools/renderer/package.json plugins/visual-tools/src -r` confirms the renderer's Node floor.
+- Read row 5 of `docs/plans/2026-10-10-learning-plugins-design.md` (Phase 4's recorded open-question-5 answer) and confirm the README links to that measurement rather than inventing size or timing numbers; if the row has no measured result, resolve Phase 4 before publishing this README.
 
 **Step 3: Commit**
 
@@ -580,13 +582,14 @@ If uninstall reports an error for a linked plugin [UNVERIFIED: `PluginManager.un
 
 **Step 2: Install from the local marketplace in omp**
 
+Phase 1 left `learning-plugins` registered. First run `omp plugin marketplace list` and inspect the source. If it is already `/home/marcus/tmp/learn/learning-plugins`, reuse it and run `omp plugin marketplace update learning-plugins` to refresh the catalog; if it is absent, run `omp plugin marketplace add /home/marcus/tmp/learn/learning-plugins`. Do not add a second marketplace with the same name. A different source under the same name is unexpected: inspect and resolve that registration before installing.
+
 ```bash
-omp plugin marketplace add /home/marcus/tmp/learn/learning-plugins
 omp plugin discover learning-plugins
 omp plugin install teach@learning-plugins quiz@learning-plugins md-log@learning-plugins
 omp plugin install visual-tools@learning-plugins
 ```
-Expected: `Added marketplace: /home/marcus/tmp/learn/learning-plugins`; `discover` lists `md-log@0.1.0`, `quiz@0.1.0`, `teach@0.1.0`, `visual-tools@0.1.0` with their descriptions; four lines `Installed <p> from learning-plugins (0.1.0)`.
+Expected: `discover` lists `md-log@0.1.0`, `quiz@0.1.0`, `teach@0.1.0`, `visual-tools@0.1.0` with their descriptions; four lines `Installed <p> from learning-plugins (0.1.0)`. Only the absent-marketplace branch prints `Added marketplace: /home/marcus/tmp/learn/learning-plugins`.
 
 Confirm omp read the omp catalog, not the CC one:
 
@@ -641,8 +644,9 @@ cd /home/marcus/tmp/learn && omp
 ```bash
 git status --porcelain
 npm ci && npm run typecheck && npm test && npm run check && npm run validate && npm run test:claude
+git status --porcelain
 ```
-Expected: `git status --porcelain` prints nothing; the chain exits 0.
+Expected: both status commands print nothing; the chain exits 0. In particular, `npm ci` verifies the committed lock has the new `teach` workspace.
 
 **Step 2: GitHub access**
 
@@ -669,26 +673,20 @@ Expected: `branch 'main' set up to track 'origin/main'`.
 **Step 4: CI green**
 
 ```bash
-gh run list --workflow ci.yml --branch main --limit 1 --json databaseId,headSha,status
+release_sha="$(git rev-parse HEAD)"
+gh run list --workflow ci.yml --branch main --limit 20 --json databaseId,headSha,status | jq -r --arg sha "$release_sha" '.[] | select(.headSha == $sha) | .databaseId'
 ```
-Wait until an entry with `headSha` equal to `git rev-parse HEAD` exists (re-run the command; it appears within a minute of the push). Then:
+Repeat the list command until it prints a run ID for `release_sha` (a just-pushed workflow may still be queued). Capture that ID and watch exactly it:
 
 ```bash
-gh run watch "$(gh run list --workflow ci.yml --branch main --limit 1 --json databaseId --jq '.[0].databaseId')" --exit-status
+run_id="$(gh run list --workflow ci.yml --branch main --limit 20 --json databaseId,headSha | jq -r --arg sha "$release_sha" '[.[] | select(.headSha == $sha) | .databaseId] | first // empty')"
+test -n "$run_id" && gh run watch "$run_id" --exit-status
 ```
-Expected: exit 0, every job `✓`.
+Expected: exit 0, every job `✓`, and the watched run's `headSha` is `release_sha`.
 
-On failure: `gh run view <id> --log-failed`. Reproduce the failing step locally with the exact command CI ran. A logic failure gets a failing test first; an environment-only failure (CI install of `claude`, Node setup, missing env) is fixed in `.github/workflows/ci.yml`. Commit as `fix(ci): <what>` (or `fix(<plugin>): <what>`), `git push`, and repeat this step.
+On failure: `gh run view "$run_id" --log-failed`. Reproduce the failing step locally with the exact command CI ran. A logic failure gets a failing test first; an environment-only failure (CI install of `claude`, Node setup, missing env) is fixed in `.github/workflows/ci.yml`. Commit as `fix(ci): <what>` (or `fix(<plugin>): <what>`), `git push`, and repeat this step with the new SHA. Do not tag yet: the GitHub-installed acceptance tests and design closure are still pending.
 
-**Step 5: Tag the release**
-
-```bash
-git tag -a v0.1.0 -m "learning-plugins 0.1.0"
-git push origin v0.1.0
-```
-
-**Step 6: Switch Claude Code to the GitHub marketplace**
-
+**Step 5: Switch Claude Code to the GitHub marketplace**
 Both marketplaces would be named `learning-plugins`, so the local one goes first. Removing a marketplace uninstalls its plugins.
 
 ```bash
@@ -701,7 +699,7 @@ claude plugin list --json | jq -c 'sort_by(.id)[] | select(.id|endswith("@learni
 ```
 Expected: `Successfully removed marketplace: learning-plugins` followed by `Also uninstalled 4 plugins from this marketplace:`; `Successfully added marketplace: learning-plugins (declared in user settings)`; the teach line ends `(+ 2 dependencies: …)`; the marketplace entry's source names `MarcusXavierr/learning-plugins`; four plugins enabled, `readFromFolder` null and `installPath` outside `/home/marcus/tmp/learn` (a GitHub install, not the checkout).
 
-**Step 7: Switch omp to the GitHub marketplace (the README's lines)**
+**Step 6: Switch omp to the GitHub marketplace (the README's lines)**
 
 omp's marketplace removal keeps installed plugins, so uninstall first:
 
@@ -715,7 +713,7 @@ omp plugin install visual-tools@learning-plugins
 ```
 Expected: four `Uninstalled …@learning-plugins`; `Removed marketplace: learning-plugins`; `Added marketplace: MarcusXavierr/learning-plugins` (`owner/repo` is omp's GitHub shorthand, `omp://marketplace.md` "Marketplace sources"); the list shows `learning-plugins` with a GitHub source; four `Installed <p> from learning-plugins (0.1.0)`.
 
-**Step 8: Master acceptance test 2, fresh session in each harness**
+**Step 7: Master acceptance test 2, fresh session in each harness**
 
 Scratch directory with no `.omp` or `.claude` above it: `mkdir -p /tmp/lp-release && cd /tmp/lp-release`.
 
@@ -734,7 +732,7 @@ Claude Code, `claude` (new session):
 
 Pass: every check above in both harnesses.
 
-**Step 9: Master acceptance test 3 from the GitHub install**
+**Step 8: Master acceptance test 3 from the GitHub install**
 
 ```bash
 cd /tmp/lp-release && : > notes-omp.md && : > notes-claude.md
@@ -745,16 +743,35 @@ In a new `omp` session, then again in a new `claude` session (using `notes-claud
 3. Answer `Mercury`; wait for the reply.
 4. `/md-unlog`, `/exit`.
 
-Then:
-```bash
-cat /tmp/lp-release/notes-omp.md /tmp/lp-release/notes-claude.md
-sed -n '/Which planet is closest to the Sun/,/^$/p' /tmp/lp-release/notes-omp.md > /tmp/lp-release/q-omp.txt
-sed -n '/Which planet is closest to the Sun/,/^$/p' /tmp/lp-release/notes-claude.md > /tmp/lp-release/q-claude.txt
-diff /tmp/lp-release/q-omp.txt /tmp/lp-release/q-claude.txt && echo identical
-```
-Expected: each note has a `YOU` block with the prompt, `AGENT` prose, the question with its three options, and the graded answer (correct, Mercury); the question and answer blocks are identical between harnesses (`identical`), because option order is seeded from the question content. The assistant prose differs between models and is not compared; byte-identity for equal entries is the md-log golden suite, which CI ran in Step 4.
+Then compare the actual quiz callouts, not a search for the question text (which also occurs in the `YOU` prompt). The question and graded answer are separate callouts with a blank line between them. Run this throwaway check from the repo root:
 
-**Step 10: Master acceptance test 4 from the GitHub install**
+```bash
+python3 - <<'PY'
+from pathlib import Path
+import re
+
+blocks = []
+for harness in ("omp", "claude"):
+    note = Path(f"/tmp/lp-release/notes-{harness}.md").read_text()
+    assert re.search(r"(?m)^> \[!quote\] YOU\n\nCall the quiz tool exactly once", note), f"{harness}: missing user prompt"
+    assert 'question "Which planet is closest to the Sun?"' in note, f"{harness}: wrong prompt"
+    assert re.search(r"(?m)^> \[!abstract\] AGENT\n\n\S", note), f"{harness}: missing assistant prose"
+    question = re.findall(r"(?m)^> \[!question\] Quiz\n(?:>.*\n)*", note)
+    answer = re.findall(r"(?m)^> \[!success\] Quiz — correct ✓\n(?:>.*\n)*", note)
+    assert len(question) == len(answer) == 1, f"{harness}: expected one question and one graded answer"
+    assert "> Which planet is closest to the Sun?\n" in question[0], f"{harness}: wrong quiz question"
+    options = re.findall(r"(?m)^> [1-3]\. (Mercury|Venus|Mars)$", question[0])
+    assert len(options) == 3 and set(options) == {"Mercury", "Venus", "Mars"}, f"{harness}: missing or duplicate options"
+    assert re.search(r"(?m)^> Your answer: [1-3]\. Mercury$", answer[0]), f"{harness}: answer not graded as Mercury"
+    assert re.search(r"(?m)^> Correct answer: [1-3]\. Mercury$", answer[0]), f"{harness}: wrong correct answer"
+    blocks.append((question[0], answer[0]))
+assert blocks[0] == blocks[1], "quiz question/options or graded answer differ between harnesses"
+print("question, displayed option order and graded answer identical")
+PY
+```
+Expected: `question, displayed option order and graded answer identical`. Each note also has the `YOU` prompt and an `AGENT` prose block. This comparison covers both actual quiz callouts; assistant prose can differ between models. Byte-identity for equal normalized entries is independently guarded by the md-log golden suite, which CI ran in Step 4.
+
+**Step 9: Master acceptance test 4 from the GitHub install**
 
 Empty renderer cache, then a maker agent in omp:
 
@@ -763,7 +780,7 @@ rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/learning-plugins/visual-tools"
 cd /tmp/lp-release && omp
 ```
 Prompt: `Use the task tool to run the mermaid-maker agent with this brief: 'A left-to-right flowchart with three nodes: Source, Build, Dist.' Report the published file name.`
-Expected: the first `render_mermaid` takes about 40 s (renderer install); `ls "${XDG_CACHE_HOME:-$HOME/.cache}/learning-plugins/visual-tools/"` shows one 16-hex-digit directory; expanding the maker's tool result shows the PNG; `ls /tmp/lp-release/viz/` shows one `viz-*.png`, the name the agent reported.
+Expected: the first `render_mermaid` installs the renderer (compare timing with Phase 4's measured answer to open question 5, not a fixed threshold); `ls "${XDG_CACHE_HOME:-$HOME/.cache}/learning-plugins/visual-tools/"` shows one 16-hex-digit directory; expanding the maker's tool result shows the PNG; `ls /tmp/lp-release/viz/` shows one `viz-*.png`, the name the agent reported.
 
 Empty the cache again, then Claude Code:
 
@@ -776,7 +793,7 @@ Expected: same install pause and cache directory; in the transcript (Ctrl+O) the
 
 SVG path, both harnesses, cache warm: `Use the svg-maker agent to draw a red circle on a white square. Report the published file name.` (in CC: `Use the Agent tool with subagent_type visual-tools:svg-maker and this prompt: 'A red circle on a white square.' Report the published file name.`) → a third and fourth PNG in `viz/`, no reinstall.
 
-**Step 11: Leave dogfooding on the GitHub install**
+**Step 10: Leave dogfooding on the GitHub install**
 
 No further change: sessions in `learning-plugins/` now use the GitHub install, the same thing users get. Unreleased work still goes through the dev loop in the README (`omp plugin link`, `claude --plugin-dir`). After a later push, refresh with `claude plugin marketplace update learning-plugins && claude plugin update teach@learning-plugins` (and each other plugin), and `omp plugin marketplace update learning-plugins && omp plugin install --force <p>@learning-plugins`.
 
@@ -797,7 +814,7 @@ Replace line 4
 Status: approved in a grill session, then hardened by a staff-engineer review. Implementation not started.
 ```
 
-with (use the real tag date):
+with (use the date on which the final tag will be pushed; do not publish the tag until Step 5 passes):
 
 ```markdown
 Status: implemented and released as v0.1.0 on <YYYY-MM-DD> (https://github.com/MarcusXavierr/learning-plugins). Approved in a grill session, then hardened by a staff-engineer review.
@@ -829,13 +846,33 @@ In `## Delivery order`, after the `**Dogfooding**` paragraph, add:
 Since the release, sessions in this repo use the marketplace install from GitHub; the link and `--plugin-dir` loop is for unreleased work.
 ```
 
-**Step 4: Commit and push**
+**Step 4: Commit and push the closed design**
 
 ```bash
 git diff -U0 docs/plans/2026-10-10-learning-plugins-design.md | grep '^+' | grep -P '[\x{2013}\x{2014}]'; echo "new-dashes: $?"
 git add docs/plans/2026-10-10-learning-plugins-design.md
 git commit -m "docs: mark design released and close open questions"
 git push
-gh run watch "$(gh run list --workflow ci.yml --branch main --limit 1 --json databaseId --jq '.[0].databaseId')" --exit-status
 ```
-Expected: `new-dashes: 1` (no dashes introduced in the new lines); push succeeds; CI exits 0.
+Expected: `new-dashes: 1` (no dashes introduced in the new lines); push succeeds.
+
+**Step 5: Verify the exact release commit, then tag**
+
+The GitHub-installed master acceptance tests 2, 3 and 4 in Task 5 Steps 7-9 and the design closure above must have passed. CI must be green on the design-closure commit itself, not on an earlier successful push. In the same shell:
+
+```bash
+release_sha="$(git rev-parse HEAD)"
+gh run list --workflow ci.yml --branch main --limit 20 --json databaseId,headSha,status | jq -r --arg sha "$release_sha" '.[] | select(.headSha == $sha) | .databaseId'
+```
+Repeat the list command until it prints a run ID for `release_sha`; do not use `.[0]` before the queued run appears. Then:
+
+```bash
+set -e
+run_id="$(gh run list --workflow ci.yml --branch main --limit 20 --json databaseId,headSha | jq -r --arg sha "$release_sha" '[.[] | select(.headSha == $sha) | .databaseId] | first // empty')"
+test -n "$run_id" && gh run watch "$run_id" --exit-status
+test "$(git rev-parse origin/main)" = "$release_sha"
+test -z "$(git status --porcelain)"
+git tag -a v0.1.0 "$release_sha" -m "learning-plugins 0.1.0"
+git push origin v0.1.0
+```
+Expected: the watched run exits 0 with every job `✓`, `origin/main` and the clean checkout still point to the verified design-closure SHA, and `v0.1.0` is pushed pointing at that SHA. On CI failure, inspect `gh run view "$run_id" --log-failed`, fix and push, then repeat this step using the new SHA; if a fix changes installed behavior, repeat Task 5 Steps 7-9 against the new GitHub tree before tagging. If CI is green but the SHA or checkout checks fail, resolve the divergence and rerun verification before tagging.

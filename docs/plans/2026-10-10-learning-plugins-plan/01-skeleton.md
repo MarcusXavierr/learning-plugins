@@ -1,6 +1,6 @@
 # Phase 1: Skeleton
 
-This phase creates the npm workspace and its toolchain, vendored Claude Code (CC) types, the tool map, the build and prompt generator, both catalogs, the omp test fake and CI. A throwaway `hello` plugin then proves the whole path in both real harnesses: a command, a tool that returns an image, and a probe that answers open question 4. The phase answers open question 1, records what it found in the design doc, deletes `hello`, and leaves an empty but green marketplace for Phase 2.
+This phase creates the npm workspace and its toolchain, vendored Claude Code (CC) types, the tool map, the build and prompt generator, both catalogs, the omp test fake and CI. A throwaway `hello` plugin proves the whole path in both real harnesses: a command, a tool that returns an image, and a probe that answers open question 4. The phase answers open question 1, records what it found in the design doc, and deletes `hello`. A small CC fixture under `build/test/fixtures/` remains outside the marketplace so CI still validates a bundled mod and executes its command test after `hello` is gone.
 
 **Prerequisites:**
 
@@ -14,7 +14,7 @@ All commands run from `/home/marcus/tmp/learn/learning-plugins` after `source ~/
 
 ## Acceptance tests
 
-1. **Given** a clean clone at the end of this phase, **when** `npm ci && npm run typecheck && npm test && npm run check && npm run validate && npm run test:claude` runs on Node 24.15.0, **then** every step exits 0. `.github/workflows/ci.yml` runs exactly this chain, with Claude Code 2.1.296 installed.
+1. **Given** a clean clone at the end of this phase, **when** `npm ci && npm run typecheck && npm test && npm run check && npm run validate && npm run test:claude` runs on Node 24.15.0, **then** every step exits 0. The last two commands strictly validate and plugin-test the built `alpha` fixture even though the marketplace is empty. `.github/workflows/ci.yml` runs exactly this chain, with Claude Code 2.1.296 installed.
 2. **Given** a built plugin, **when** a source change that alters output is left unbuilt, **then** `npm run check` exits 1 and names every stale, missing, or extra generated file.
 3. **Given** the `hello` plugin, **when** it is loaded in CC (`--plugin-dir`) and in omp (installed from this repo as a local marketplace), **then** `/hello Ada` prints `Hello, Ada!`, and after the model calls `hello_image` it names the colour red. This holds in both harnesses.
 4. **Given** a harness-neutral agent or skill using `{{tool:…}}`, `{{agent:…}}` and `{{dispatch:…}}`, **when** it is rendered, **then** omp gets the `task` call shape and CC gets the `Agent` call shape, byte-for-byte equal to the golden files. An unknown id, unknown placeholder or frontmatter key, or a legacy literal fails with a `PromptError` naming the file.
@@ -54,11 +54,11 @@ The master plan's Shared contracts must say the following. Each task below that 
 2. **`shared/tool-map.ts`** also exports `HARNESSES: readonly Harness[]`, equal to `["omp", "claude"]`.
 3. **Catalogs** have a top-level `description` (required by CC `--strict`; omp ignores unknown keys, `fetcher.ts:108-201`).
 4. **`diffRepo`** ignores what CC writes into a plugin dir it loads: `dist/claude/*/.claude-plugin/types/**` and `dist/claude/*/tsconfig.json`. The first is self-ignored; `.gitignore` covers the second.
-5. **`npm run validate`** prints `nothing to validate` and exits 0 when `dist/claude/` has no plugins, because CC rejects an empty marketplace under `--strict`.
+5. **`npm run validate`** runs `claude plugin validate --strict` on a staged built `alpha` fixture on every invocation; it also validates the repo root and every `dist/claude/*` when real plugins exist. An empty marketplace is skipped because CC rejects it under `--strict`, but validation is never a no-op.
 6. **Generated trees.**
    - `dist/omp/<name>/package.json` has the `omp` key only when `src/omp.ts` exists.
    - `plugin.json#dependencies` is present only when it is non-empty.
-7. **`test-claude`.** CC test files may import only `claude-code/testing` and files under their own `test/claude/`, because `.test-build/claude/<p>` holds the built tree plus `test/claude/**` and nothing from `src/`.
+7. **`test-claude`.** Default invocation always stages and runs the `alpha` fixture's `test/claude/alpha.test.ts`, plus every real plugin with CC tests. Explicit `-- <plugin>` runs that plugin alone. CC test files may import only `claude-code/testing` and files under their own `test/claude/`, because the staged built tree holds no `src/`.
 8. **Prompt source format additions** (all `PromptError`):
    - an unknown top-level frontmatter key, so per-harness extras go under `harness.<h>`;
    - a `harness.<h>` key that collides with `name`, `description`, `tools` or `model`;
@@ -71,7 +71,8 @@ The master plan's Shared contracts must say the following. Each task below that 
    - Output is `---\n` + `yaml.stringify(fm, {lineWidth: 0})` + `---\n` + the body with trailing whitespace trimmed + `\n`.
    - A dispatch line becomes the exact block shown in Task 5's golden files, keeping the line's indentation.
 9. **Fake omp.** The signature is `createFakeOmp(options?: { cwd?: string; hasUI?: boolean })`. `fake.ctx` holds only `cwd`, `hasUI`, `mode: "tui"` and `ui.notify`, and later phases extend it additively.
-10. **Typecheck scope.** `npm run typecheck` also covers `types/claude-code/**` and `vitest.config.ts`. The root config is `tsconfig.json`; there is no `tsconfig.base.json`, and Task 15 fixes the design's layout to match.
+10. **Typecheck scope.** `npm run typecheck` also covers `types/claude-code/**` and `vitest.config.ts`; the throwaway probe must live under the former. The root config is `tsconfig.json`; there is no `tsconfig.base.json`, and Task 15 fixes the design's layout to match.
+11. **Manifest output safety.** `extraBundles[].entry`/`.out` and `copy[]` are normalized plugin-root-relative paths without empty, `.` or `..` segments or backslashes. `loadPluginSource` checks their shapes before building; `buildTree` rejects duplicate file paths (including a file/directory conflict) across metadata, bundles, copied files and rendered prompts rather than silently overwriting them. `buildRepo` rejects a collision or traversal before `writeRepo` can write any tree.
 
 ---
 
@@ -229,7 +230,7 @@ cp /tmp/lp-cc-probe/.claude-plugin/types/claude-code-tools/index.d.ts types/clau
 
 **Step 2: Prove that the types are seen (failing probe)**
 
-Create the throwaway file `types/probe.ts`:
+Create the throwaway file `types/claude-code/probe.ts` (inside the `types/claude-code` tsconfig include):
 
 ```ts
 import type { Register } from "claude-code";
@@ -242,7 +243,7 @@ export type Test = typeof test;
 ```
 
 Run: `npm run typecheck`
-Expected: FAIL with `types/probe.ts(5,6): error TS2345: Argument of type '"session.strat"' is not assignable to parameter of type 'Pattern'`, plus TS7006 implicit-any errors on `$`, `e` and `next`. The ambient module resolves, and event names are checked.
+Expected: FAIL with `types/claude-code/probe.ts(5,6): error TS2345: Argument of type '"session.strat"' is not assignable to parameter of type 'Pattern'` (and possibly related implicit-any diagnostics). If TS2345 is absent, stop: the probe was not typechecked.
 
 **Step 3: Fix the probe**
 
@@ -254,7 +255,7 @@ Expected: exit 0.
 **Step 4: Delete the probe and commit**
 
 ```bash
-rm types/probe.ts
+rm types/claude-code/probe.ts
 git add types/claude-code
 git commit -m "chore: vendor Claude Code mod types (2.1.277 bootstrap)"
 ```
@@ -352,14 +353,19 @@ git commit -m "feat(shared): tool and agent map with per-harness names"
 **Step 1: Write the failing test**
 
 ```ts
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "vitest";
+import { afterAll, expect, test } from "vitest";
 import { loadPluginSource } from "../plugin-source.ts";
 
+const roots: string[] = [];
+afterAll(async () => { await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true }))); });
+
 async function pluginDir(name: string, manifest: object): Promise<string> {
-  const dir = join(await mkdtemp(join(tmpdir(), "lp-src-")), name);
+  const root = await mkdtemp(join(tmpdir(), "lp-src-"));
+  roots.push(root);
+  const dir = join(root, name);
   await mkdir(dir);
   await writeFile(join(dir, "package.json"), JSON.stringify(manifest));
   return dir;
@@ -392,13 +398,24 @@ Expected: FAIL with `Cannot find module '../plugin-source.ts'`.
 
 ```ts
 import { access, readFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, join, posix } from "node:path";
 
 export interface ExtraBundle { entry: string; out: string; platform: "node" | "neutral" }
 export interface PluginSource {
   dir: string; name: string; version: string; description: string;
   dependencies: string[]; extraBundles: ExtraBundle[]; copy: string[];
   hasClaude: boolean; hasOmp: boolean;
+}
+
+/** Manifest paths must stay inside one plugin in both distribution trees. */
+function pluginPath(value: unknown, field: string, fail: (problem: string) => never): string {
+  if (
+    typeof value !== "string" || value === "" || value.includes("\\") || value.includes("\0") ||
+    value.startsWith("/") || /^[A-Za-z]:/.test(value) ||
+    value.split("/").some((part) => part === "" || part === "." || part === "..") ||
+    posix.normalize(value) !== value
+  ) fail(`"${field}" must be a normalized plugin-root-relative path`);
+  return value as string;
 }
 
 /** Reads `plugins/<name>/package.json`. The plugin name is the directory name. */
@@ -414,7 +431,28 @@ export async function loadPluginSource(dir: string): Promise<PluginSource> {
   for (const key of ["version", "description"]) {
     if (typeof pkg[key] !== "string" || pkg[key] === "") fail(`"${key}" must be a non-empty string`);
   }
-  const plugin = (pkg.plugin ?? {}) as { dependencies?: string[]; extraBundles?: ExtraBundle[]; copy?: string[] };
+  if (pkg.plugin !== undefined && (pkg.plugin === null || typeof pkg.plugin !== "object" || Array.isArray(pkg.plugin))) {
+    fail('"plugin" must be an object');
+  }
+  const plugin = (pkg.plugin ?? {}) as Record<string, unknown>;
+  if (plugin.dependencies !== undefined && (!Array.isArray(plugin.dependencies) || !plugin.dependencies.every((v) => typeof v === "string" && v !== ""))) {
+    fail('"plugin.dependencies" must be an array of non-empty strings');
+  }
+  if (plugin.copy !== undefined && !Array.isArray(plugin.copy)) fail('"plugin.copy" must be an array');
+  if (plugin.extraBundles !== undefined && !Array.isArray(plugin.extraBundles)) fail('"plugin.extraBundles" must be an array');
+  const copy = (plugin.copy ?? []) as unknown[];
+  const bundles = (plugin.extraBundles ?? []) as unknown[];
+  const extraBundles = bundles.map((item, index): ExtraBundle => {
+    const field = `plugin.extraBundles[${index}]`;
+    if (item === null || typeof item !== "object" || Array.isArray(item)) fail(`"${field}" must be an object`);
+    const bundle = item as Record<string, unknown>;
+    if (bundle.platform !== "node" && bundle.platform !== "neutral") fail(`"${field}.platform" must be "node" or "neutral"`);
+    return {
+      entry: pluginPath(bundle.entry, `${field}.entry`, fail),
+      out: pluginPath(bundle.out, `${field}.out`, fail),
+      platform: bundle.platform,
+    };
+  });
   const [hasClaude = false, hasOmp = false] = await Promise.all(
     ["src/claude.ts", "src/omp.ts"].map((entry) => access(join(dir, entry)).then(() => true, () => false)),
   );
@@ -424,9 +462,9 @@ export async function loadPluginSource(dir: string): Promise<PluginSource> {
     name,
     version: pkg.version as string,
     description: pkg.description as string,
-    dependencies: plugin.dependencies ?? [],
-    extraBundles: plugin.extraBundles ?? [],
-    copy: plugin.copy ?? [],
+    dependencies: (plugin.dependencies ?? []) as string[],
+    extraBundles,
+    copy: copy.map((path, index) => pluginPath(path, `plugin.copy[${index}]`, fail)),
     hasClaude,
     hasOmp,
   };
@@ -436,9 +474,10 @@ export async function loadPluginSource(dir: string): Promise<PluginSource> {
 **Step 4: Run it**
 
 Run: `npx vitest run build/test/plugin-source.test.ts && npm run typecheck`
-Expected: 3 passed; exit 0.
+Expected: 3 passed; exit 0. Task 9 exercises malformed manifest paths and output collisions through `buildRepo`.
 
 **Step 5: Commit**
+When updating the master's manifest contract, add refinement 11's path rules beside the `extraBundles[].out`/`copy[]` description.
 
 ```bash
 git add build/plugin-source.ts build/test/plugin-source.test.ts
@@ -1029,6 +1068,22 @@ export function register(on: On, _options: PluginOptions): void {
 }
 ```
 
+`build/test/fixtures/repo/plugins/alpha/test/claude/alpha.test.ts` (kept after `hello` is deleted; excluded from Vitest, run against a staged built plugin by the CC test kit):
+
+```ts
+import { expect, test } from "claude-code/testing";
+
+test("/alpha executes the bundled command", async ($) => {
+  const answer = await $.command.run({
+    command: "alpha",
+    args: "Ada",
+    origin: { kind: "composer" },
+    presentation: { isFullscreen: false, columns: 80 },
+  });
+  expect(answer.text).toBe("hello, Ada");
+});
+```
+
 `build/test/fixtures/repo/plugins/alpha/src/tool/cli.ts`:
 
 ```ts
@@ -1091,14 +1146,17 @@ Hi {name}
 `build/test/plugin-tree.test.ts`:
 
 ```ts
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test } from "vitest";
 import { createFakeOmp } from "../../test-support/fake-omp.ts";
 import { loadPluginSource } from "../plugin-source.ts";
 import { buildTree, renderPrompts, type Tree } from "../plugin-tree.ts";
+
+const roots: string[] = [];
+afterAll(async () => { await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true }))); });
 
 const FIXTURES = join(import.meta.dirname, "fixtures/repo/plugins");
 const text = (tree: Tree, path: string): string => {
@@ -1111,7 +1169,7 @@ const alpha = await loadPluginSource(join(FIXTURES, "alpha"));
 const beta = await loadPluginSource(join(FIXTURES, "beta"));
 
 describe("a plugin with both adapters", () => {
-  test("CC tree: manifest, hooks module list, and a self-contained hooks bundle", async () => {
+  test("CC tree: manifest and hooks module list", async () => {
     const tree = await buildTree(alpha, "claude");
     expect([...tree.keys()].sort()).toEqual([".claude-plugin/plugin.json", "hooks/hooks.json", "hooks/register.js", "tool/cli.js", "tool/data.txt"]);
     expect(JSON.parse(text(tree, ".claude-plugin/plugin.json"))).toEqual({
@@ -1121,9 +1179,6 @@ describe("a plugin with both adapters", () => {
       author: { name: "Marcus Xavier" },
     });
     expect(JSON.parse(text(tree, "hooks/hooks.json"))).toEqual({ modules: ["./register.js"] });
-    const hooks = text(tree, "hooks/register.js");
-    expect(hooks).toContain("export {\n  register\n}");
-    expect(hooks).not.toMatch(/from\s+["']\.{1,2}\//);
   });
 
   test("omp tree: the extension bundle loads in Node and registers the plugin's command", async () => {
@@ -1135,7 +1190,9 @@ describe("a plugin with both adapters", () => {
       type: "module",
       omp: { extensions: ["./extension.js"] },
     });
-    const file = join(await mkdtemp(join(tmpdir(), "lp-ext-")), "extension.mjs");
+    const root = await mkdtemp(join(tmpdir(), "lp-ext-"));
+    roots.push(root);
+    const file = join(root, "extension.mjs");
     await writeFile(file, text(tree, "extension.js"));
     const factory = (await import(pathToFileURL(file).href)).default;
     const fake = createFakeOmp();
@@ -1175,7 +1232,9 @@ describe("a prompts-only plugin", () => {
 });
 
 test("a skill directory without SKILL.md fails instead of shipping the files unrendered", async () => {
-  const dir = join(await mkdtemp(join(tmpdir(), "lp-skill-")), "demo");
+  const root = await mkdtemp(join(tmpdir(), "lp-skill-"));
+  roots.push(root);
+  const dir = join(root, "demo");
   await mkdir(join(dir, "prompts/skills/oops"), { recursive: true });
   await writeFile(join(dir, "package.json"), JSON.stringify({ name: "@learning-plugins/demo", version: "0.1.0", description: "d" }));
   await writeFile(join(dir, "prompts/skills/oops/skill.md"), "---\nname: oops\ndescription: d\n---\n");
@@ -1262,39 +1321,41 @@ export async function renderPrompts(src: PluginSource, harness: Harness): Promis
 
 export async function buildTree(src: PluginSource, harness: Harness): Promise<Tree> {
   const tree: Tree = new Map();
+  const put = (path: string, content: string | Uint8Array): void => {
+    for (const existing of tree.keys()) {
+      if (existing === path || existing.startsWith(`${path}/`) || path.startsWith(`${existing}/`)) {
+        throw new Error(`plugins/${src.name}: duplicate output path "${path}" in ${harness} tree`);
+      }
+    }
+    tree.set(path, content);
+  };
   if (harness === "claude") {
-    tree.set(
-      ".claude-plugin/plugin.json",
-      json({
-        name: src.name,
-        version: src.version,
-        description: src.description,
-        author: AUTHOR,
-        ...(src.dependencies.length > 0 ? { dependencies: src.dependencies } : {}),
-      }),
-    );
+    put(".claude-plugin/plugin.json", json({
+      name: src.name,
+      version: src.version,
+      description: src.description,
+      author: AUTHOR,
+      ...(src.dependencies.length > 0 ? { dependencies: src.dependencies } : {}),
+    }));
     if (src.hasClaude) {
-      tree.set("hooks/hooks.json", json({ modules: ["./register.js"] }));
-      tree.set("hooks/register.js", await bundle(src, "src/claude.ts", "neutral", ["claude-code"]));
+      put("hooks/hooks.json", json({ modules: ["./register.js"] }));
+      put("hooks/register.js", await bundle(src, "src/claude.ts", "neutral", ["claude-code"]));
     }
   } else {
-    tree.set(
-      "package.json",
-      json({
-        name: `@learning-plugins/${src.name}`,
-        version: src.version,
-        description: src.description,
-        type: "module",
-        ...(src.hasOmp ? { omp: { extensions: ["./extension.js"] } } : {}),
-      }),
-    );
+    put("package.json", json({
+      name: `@learning-plugins/${src.name}`,
+      version: src.version,
+      description: src.description,
+      type: "module",
+      ...(src.hasOmp ? { omp: { extensions: ["./extension.js"] } } : {}),
+    }));
     if (src.hasOmp) {
-      tree.set("extension.js", await bundle(src, "src/omp.ts", "node", ["@oh-my-pi/*", "@sinclair/typebox", "node:*"]));
+      put("extension.js", await bundle(src, "src/omp.ts", "node", ["@oh-my-pi/*", "@sinclair/typebox", "node:*"]));
     }
   }
-  for (const extra of src.extraBundles) tree.set(extra.out, await bundle(src, extra.entry, extra.platform, []));
-  for (const path of src.copy) tree.set(path, await readFile(join(src.dir, path)));
-  for (const [path, content] of await renderPrompts(src, harness)) tree.set(path, content);
+  for (const extra of src.extraBundles) put(extra.out, await bundle(src, extra.entry, extra.platform, []));
+  for (const path of src.copy) put(path, await readFile(join(src.dir, path)));
+  for (const [path, content] of await renderPrompts(src, harness)) put(path, content);
   return tree;
 }
 ```
@@ -1310,6 +1371,7 @@ Run: `npx vitest run build/test/plugin-tree.test.ts && npm run typecheck`
 Expected: 6 passed; exit 0.
 
 **Step 6: Commit**
+Keep the master's generated-tree contract consistent with refinement 11: no manifest output can replace another output, metadata, or a rendered prompt. The built CC fixture is tested by `claude plugin validate --strict` and `claude plugin test` in Task 10; do not assert esbuild's export formatting.
 
 Check that the master's Build module API lists `renderPrompts` and `listFiles` (refinement 1), and add them if missing:
 
@@ -1438,11 +1500,15 @@ git commit -m "feat(build): marketplace catalogs for both harnesses"
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "vitest";
+import { afterAll, expect, test } from "vitest";
 import { buildRepo, diffRepo, writeRepo } from "../repo.ts";
+
+const fixtureRoots: string[] = [];
+afterAll(async () => { await Promise.all(fixtureRoots.map((root) => rm(root, { recursive: true, force: true }))); });
 
 async function fixtureRepo(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "lp-repo-"));
+  fixtureRoots.push(root);
   await cp(join(import.meta.dirname, "fixtures/repo"), root, { recursive: true });
   return root;
 }
@@ -1525,6 +1591,49 @@ test("a dependency on a plugin that does not exist fails the build", async () =>
   await writeFile(manifest, JSON.stringify({ ...pkg, plugin: { dependencies: ["alpah"] } }));
   await expect(buildRepo(root)).rejects.toThrow('plugins/beta: unknown dependency "alpah"');
 });
+
+test.each([
+  ["bundle overwrites CC metadata", { extraBundles: [{ entry: "src/tool/cli.ts", out: ".claude-plugin/plugin.json", platform: "node" }] }, 'duplicate output path ".claude-plugin/plugin.json"'],
+  ["copy overwrites a generated hook", { copy: ["hooks/hooks.json"] }, 'duplicate output path "hooks/hooks.json"'],
+  ["two bundles share an output", { extraBundles: [
+    { entry: "src/tool/cli.ts", out: "tool/cli.js", platform: "node" },
+    { entry: "src/tool/cli.ts", out: "tool/cli.js", platform: "node" },
+  ] }, 'duplicate output path "tool/cli.js"'],
+  ["copy overwrites a rendered prompt", { copy: ["skills/greeting/SKILL.md"] }, 'duplicate output path "skills/greeting/SKILL.md"'],
+])("rejects %s before writing dist", async (_case, plugin, error) => {
+  const root = await fixtureRepo();
+  const manifest = join(root, "plugins/alpha/package.json");
+  const pkg = JSON.parse(await readFile(manifest, "utf8"));
+  await writeFile(manifest, JSON.stringify({ ...pkg, plugin }));
+  if (_case === "copy overwrites a generated hook") {
+    await mkdir(join(root, "plugins/alpha/hooks"), { recursive: true });
+    await writeFile(join(root, "plugins/alpha/hooks/hooks.json"), "{}");
+  }
+  if (_case === "copy overwrites a rendered prompt") {
+    const prompt = join(root, "plugins/alpha/prompts/skills/greeting");
+    await mkdir(prompt, { recursive: true });
+    await writeFile(join(prompt, "SKILL.md"), "---\nname: greeting\ndescription: d\n---\n");
+    await mkdir(join(root, "plugins/alpha/skills/greeting"), { recursive: true });
+    await writeFile(join(root, "plugins/alpha/skills/greeting/SKILL.md"), "copy");
+  }
+  await expect(buildRepo(root)).rejects.toThrow(error);
+  await expect(readFile(join(root, "dist/claude/alpha/.claude-plugin/plugin.json"))).rejects.toThrow("ENOENT");
+});
+
+test.each([
+  ["bundle entry", { extraBundles: [{ entry: "../escape.ts", out: "tool/cli.js", platform: "node" }] }, '"plugin.extraBundles[0].entry"'],
+  ["bundle output", { extraBundles: [{ entry: "src/tool/cli.ts", out: "../escape.js", platform: "node" }] }, '"plugin.extraBundles[0].out"'],
+  ["copied file", { copy: ["../escape.txt"] }, '"plugin.copy[0]"'],
+  ["Windows drive path", { copy: ["C:/escape.txt"] }, '"plugin.copy[0]"'],
+  ["non-string copy", { copy: [42] }, '"plugin.copy[0]"'],
+  ["invalid platform", { extraBundles: [{ entry: "src/tool/cli.ts", out: "tool/cli.js", platform: "browser" }] }, '"plugin.extraBundles[0].platform"'],
+])("rejects invalid %s through buildRepo", async (_case, plugin, field) => {
+  const root = await fixtureRepo();
+  const manifest = join(root, "plugins/alpha/package.json");
+  const pkg = JSON.parse(await readFile(manifest, "utf8"));
+  await writeFile(manifest, JSON.stringify({ ...pkg, plugin }));
+  await expect(buildRepo(root)).rejects.toThrow(field);
+});
 ```
 
 **Step 2: Run it**
@@ -1601,7 +1710,7 @@ export async function diffRepo(root: string, files: Tree): Promise<string[]> {
 **Step 4: Run it**
 
 Run: `npx vitest run build/test/repo.test.ts && npm test && npm run typecheck`
-Expected: 7 passed; the full suite (7 files) passes; exit 0.
+Expected: 17 passed; the full suite (7 files) passes; exit 0.
 
 **Step 5: Commit**
 
@@ -1620,7 +1729,7 @@ git commit -m "feat(build): build, write and diff the generated repo files"
 - Create: `build/cli.ts`
 - Generated: `.claude-plugin/marketplace.json`, `.omp-plugin/marketplace.json`
 
-The CLI is glue over functions tested in Tasks 4–9. Its proof is running it, here with zero plugins and in Task 12 with `hello`.
+The CLI is glue over functions tested in Tasks 4–9. Its proof is running it with the persistent `alpha` fixture (strict validation and a real CC command test), then with `hello` in Task 12. The fixture is never added to the marketplace or `dist/`.
 
 **Step 1: Implement**
 
@@ -1638,6 +1747,7 @@ const [command, ...args] = process.argv.slice(2);
 
 /** Vendored from what CC writes into `<plugin>/.claude-plugin/types/`; claude-code-mcp is machine-specific, so not vendored. */
 const CLAUDE_TYPE_FILES = ["claude-code/index.d.ts", "claude-code-tools/index.d.ts"];
+const FIXTURE = join(root, "build/test/fixtures/repo/plugins/alpha");
 
 function run(cmd: string, argv: string[]): boolean {
   console.log(`$ ${cmd} ${argv.join(" ")}`);
@@ -1647,6 +1757,24 @@ function run(cmd: string, argv: string[]): boolean {
 async function subdirs(dir: string): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
   return entries.filter((e) => e.isDirectory()).map((e) => e.name).sort();
+}
+
+/** Stage the actual built tree, optionally copying the CC tests, without touching committed dist/. */
+async function stageClaude(source: string, name: string, withTests: boolean): Promise<string> {
+  const dir = source === FIXTURE ? join(root, ".test-build/fixtures/alpha") : join(root, ".test-build/claude", name);
+  await rm(dir, { recursive: true, force: true });
+  for (const [path, content] of await buildTree(await loadPluginSource(source), "claude")) {
+    await mkdir(dirname(join(dir, path)), { recursive: true });
+    await writeFile(join(dir, path), content);
+  }
+  if (withTests) {
+    const testDir = join(source, "test/claude");
+    for (const file of await listFiles(testDir)) {
+      await mkdir(dirname(join(dir, "test/claude", file)), { recursive: true });
+      await copyFile(join(testDir, file), join(dir, "test/claude", file));
+    }
+  }
+  return dir;
 }
 
 switch (command) {
@@ -1664,10 +1792,11 @@ switch (command) {
     break;
   }
   case "validate": {
-    // CC fails a marketplace with no plugins under --strict, so an empty repo has nothing to validate.
+    // CC rejects an empty marketplace, but the persistent fixture always validates the built bundle.
     const plugins = (await subdirs(join(root, "dist/claude"))).map((name) => join(root, "dist/claude", name));
-    if (plugins.length === 0) console.log("no plugins in dist/claude: nothing to validate");
-    const dirs = plugins.length > 0 ? [root, ...plugins] : [];
+    const fixture = await stageClaude(FIXTURE, "alpha-fixture", false);
+    if (plugins.length === 0) console.log("no plugins in dist/claude: validating fixture only");
+    const dirs = [...(plugins.length > 0 ? [root, ...plugins] : []), fixture];
     const failed = dirs.filter((dir) => !run("claude", ["plugin", "validate", "--strict", dir]));
     if (failed.length > 0) {
       console.error(`validate --strict failed for:\n${failed.join("\n")}`);
@@ -1679,24 +1808,14 @@ switch (command) {
     const all = await subdirs(join(root, "plugins"));
     const withTests: string[] = [];
     for (const name of all) if ((await listFiles(join(root, "plugins", name, "test/claude"))).length > 0) withTests.push(name);
-    const names = args.length > 0 ? args : withTests;
+    const names = args.length > 0 ? args : ["alpha-fixture", ...withTests];
     const failed: string[] = [];
     for (const name of names) {
-      if (!withTests.includes(name)) throw new Error(`plugins/${name}/test/claude has no CC tests`);
-      const dir = join(root, ".test-build/claude", name);
-      await rm(dir, { recursive: true, force: true });
-      for (const [path, content] of await buildTree(await loadPluginSource(join(root, "plugins", name)), "claude")) {
-        await mkdir(dirname(join(dir, path)), { recursive: true });
-        await writeFile(join(dir, path), content);
-      }
-      const testDir = join(root, "plugins", name, "test/claude");
-      for (const file of await listFiles(testDir)) {
-        await mkdir(dirname(join(dir, "test/claude", file)), { recursive: true });
-        await copyFile(join(testDir, file), join(dir, "test/claude", file));
-      }
+      const source = name === "alpha-fixture" ? FIXTURE : join(root, "plugins", name);
+      if (name !== "alpha-fixture" && !withTests.includes(name)) throw new Error(`plugins/${name}/test/claude has no CC tests`);
+      const dir = await stageClaude(source, name, true);
       if (!run("claude", ["plugin", "test", dir])) failed.push(name);
     }
-    if (names.length === 0) console.log("no plugin has CC tests (plugins/*/test/claude)");
     if (failed.length > 0) {
       console.error(`claude plugin test failed for: ${failed.join(", ")}`);
       process.exitCode = 1;
@@ -1726,8 +1845,8 @@ switch (command) {
 ```bash
 npm run build          # prints: wrote dist/ and both catalogs
 npm run check          # exit 0, no output after the banner
-npm run validate       # prints: no plugins in dist/claude: nothing to validate   (exit 0)
-npm run test:claude    # prints: no plugin has CC tests (plugins/*/test/claude)  (exit 0)
+npm run validate       # validates .test-build/fixtures/alpha with --strict; empty marketplace is skipped
+npm run test:claude    # runs /alpha Ada against the built fixture; 1 pass, 0 fail
 npm run typecheck && npm test
 ```
 
@@ -1739,7 +1858,7 @@ Expected:
 
 **Step 3: Commit**
 
-Check the master's Commands table for refinement 5. The `npm run validate` row should read: `node build/cli.ts validate`: `claude plugin validate --strict` on the repo root and every `dist/claude/*`; with no plugins it prints `nothing to validate` and exits 0.
+Check the master's Commands table for refinements 5 and 7. The `npm run validate` row must say that the built `alpha` fixture is always staged and validated under `--strict`, and the root plus `dist/claude/*` are validated when real plugins exist; the `npm run test:claude [-- <plugin>]` row must say that default invocation runs the staged fixture and every real plugin with CC tests, while an explicit plugin selects only that plugin.
 
 ```bash
 git add build/cli.ts .claude-plugin/marketplace.json .omp-plugin/marketplace.json docs/plans/2026-10-10-learning-plugins-plan.md
@@ -2279,7 +2398,7 @@ Expected:
 
 - `npm install` prints `removed 1 package`, and `package-lock.json` drops `plugins/hello`.
 - The build deletes `dist/` and rewrites both catalogs with `"plugins": []`.
-- `validate` prints `no plugins in dist/claude: nothing to validate`, and `test:claude` prints `no plugin has CC tests (plugins/*/test/claude)`.
+- `validate` skips the empty root marketplace but prints `✔ Validation passed` for `.test-build/fixtures/alpha`; `test:claude` runs `alpha.test.ts` and reports `1 pass, 0 fail`.
 - Everything exits 0. `npm test` runs the 7 remaining files under `build/`, `shared/` and `test-support/`.
 
 **Step 6: Commit**
@@ -2361,7 +2480,7 @@ Expected: `exit 0`. The workflow first runs on GitHub when Phase 5 pushes. Don't
 ## Phase exit checklist
 
 - `git log --oneline` shows this phase's commits on top of `84332f0 docs: add implementation plan master`, and `git status` is clean.
-- `plugins/` is absent or empty, `dist/` is absent, and both catalogs list no plugins.
+- `plugins/` is absent or empty, `dist/` is absent, and both catalogs list no plugins; `build/test/fixtures/repo/plugins/alpha` remains and `npm run validate && npm run test:claude` exercises its built CC mod.
 - `types/claude-code/claude-code/index.d.ts` starts with `// Written by Claude Code 2.1.296.`.
 - The design doc answers open questions 1 and 4.
-- The master plan's Shared contracts include refinements 1–10.
+- The master plan's Shared contracts include refinements 1–11.

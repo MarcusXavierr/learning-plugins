@@ -43,8 +43,8 @@ Phases run in order. Within a phase, tasks run in order unless the phase file sa
 | `npx vitest run -u <path>` | update file snapshots (golden files) after a deliberate change |
 | `npm run build` | `node build/cli.ts build`: regenerate `dist/` and both catalogs |
 | `npm run check` | `node build/cli.ts check`: rebuild in memory, exit 1 listing every stale, missing, or extra generated file |
-| `npm run validate` | `node build/cli.ts validate`: `claude plugin validate --strict` on the repo root and every `dist/claude/*`; with no plugins it prints `nothing to validate` and exits 0 (CC rejects an empty marketplace under `--strict`) |
-| `npm run test:claude [-- <plugin>]` | `node build/cli.ts test-claude`: assemble `.test-build/claude/<plugin>` (dist tree + `plugins/<plugin>/test/claude/**`) and run `claude plugin test` on it. CC test files may import only `claude-code/testing` and files under their own `test/claude/` |
+| `npm run validate` | `node build/cli.ts validate`: stage the built `build/test/fixtures/repo/plugins/alpha` under `.test-build/fixtures/alpha` and run `claude plugin validate --strict` on it every time; when real plugins exist, also validate the repo root and every `dist/claude/*`. Skip only the empty root marketplace, which CC rejects under `--strict` |
+| `npm run test:claude [-- <plugin>]` | `node build/cli.ts test-claude`: by default run `claude plugin test` on the staged built alpha fixture and on each real plugin that has CC tests; an explicit plugin argument runs only that plugin. Each tree is staged with its own `test/claude/**`. CC test files import only `claude-code/testing` and files under that test directory |
 | `npm run types:claude -- <dir>` | `node build/cli.ts refresh-claude-types <dir>`: copy CC-generated declaration files from `<dir>` into `types/claude-code/` |
 
 ## Shared contracts
@@ -72,6 +72,7 @@ These are fixed here so phases written and executed separately agree. A phase th
 - `src/claude.ts` present → CC hooks bundle. `src/omp.ts` present → omp extension bundle. Neither → prompts-only plugin.
 - `prompts/agents/*.md` and `prompts/skills/<skill>/SKILL.md` (plus any other files in a skill dir, copied verbatim) are rendered per harness.
 - `extraBundles[].out` and `copy[]` paths are relative to the plugin root and land at the same relative path in **both** trees.
+- `extraBundles[].entry`, `extraBundles[].out`, and `copy[]` must be normalized plugin-root-relative paths: no traversal, no absolute or drive path, no empty or dot segment, no backslash. The build rejects malformed shapes, and duplicate or file/directory-conflicting output paths across generated metadata, bundles, copies, and rendered prompts, before writing any tree.
 
 ### Generated trees
 

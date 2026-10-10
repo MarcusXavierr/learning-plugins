@@ -8,7 +8,7 @@ Port `.pi/extensions/quiz.ts` to a `quiz` plugin that works in both harnesses: p
 
 1. **Given** a quiz call with options and `correctAnswer` given by option value, **when** the user answers in either harness, **then** the user sees ✓/✗ feedback with the correct answer and the explanation, the model receives the graded text, and the result carries `QuizResultDetails` (omp `details`; CC `<quiz-result>` block) whose `options` are in exactly `displayOrder(input)` order.
 2. **Given** a multi-select quiz, **when** the user submits a subset, a superset, or the exact set of correct options, **then** only the exact set is graded correct; "I don't know" (and, in CC, words typed under "Other") is reported as `dontKnow` — never as a wrong answer — with any note kept.
-3. **Given** bad input (a `correctAnswer` matching no value, duplicate values, fewer than two options, several answers on a single-select quiz; in CC also more than 3 options, a comma in a multi-select label, duplicate or reserved labels), **when** the tool runs, **then** it returns a model-readable error and no dialog opens.
+3. **Given** bad input (a `correctAnswer` matching no value, duplicate values, fewer than two options, several answers on a single-select quiz, or a present optional field of the wrong type; in CC also more than 3 options, a comma in a multi-select label, duplicate or reserved labels), **when** the tool runs, **then** it returns a model-readable error and no dialog opens.
 4. **Given** the user dismisses the dialog, the turn is aborted, or the session has no interactive UI, **when** the quiz runs, **then** the result status is `cancelled` or `unavailable` and nothing hangs.
 5. **Given** md-log linked in both harnesses, **when** the same quiz is answered the same way in each, **then** the two notes' quiz question and answer blocks are byte-identical.
 
@@ -23,7 +23,7 @@ Verified while writing this phase (throwaway prototype of this exact code: `tsc`
 - **CC error result** `{ result, isError: true }` is a member of the hook-return union `ToolCallResult` (cc.d.ts:9822-9903); the kit passes it through verbatim. Whether the model then sees `is_error: true` is **[UNVERIFIED]** (CC session limit hit while checking) — Task 11 step 6 checks it. Phase 4 uses the same shape and the same check.
 - **`.catch`**: `validate --strict` reports `gating hook with .catch: tool.call{tool=mcp__quiz__quiz}`; the handler gets `next.error` (`HookFailure`, cc.d.ts:4264-4276; `CatchHandler` cc.d.ts:875-904).
 - **`isDeferred: false`** on `$.tool.register`: the CC 2.1.296 runtime accepts it (its own message: `tool.register takes { name, description, inputSchema?, isDeferred? }`; docs api.md "Add a tool" tip, v2.1.293+). The public 2.1.277 `ToolSpec` (cc.d.ts:10158-10174) lacks it; the vendored 2.1.296 types are **[UNVERIFIED]** — Task 9 step 5 has the decision rule.
-- **Open question 2 — resolved: yes.** The `ToolUse` render site's props carry `output` ("the stored result once the call has resolved", cc.d.ts:7974-7982), and the result block under a standalone row is its own `ToolResult` site with `tool`, `output`, `isErrored` (cc.d.ts:7993-8036; reference.md:214 "The tool's name, input, and result"). Task 10 (optional) draws ✓/✗ at `ToolResult`; the kit verifies the hook receives `e.props.output` and its `Text` elements are findable.
+- **Open question 2 — resolved: yes.** The `ToolUse` render site's props carry `output` ("the stored result once the call has resolved", cc.d.ts:7974-7982), and the result block under a standalone row is its own `ToolResult` site with `tool`, `output`, `isErrored` (cc.d.ts:7993-8036; reference.md:214 "The tool's name, input, and result"). Task 10 (required) draws ✓/✗ at `ToolResult`; the kit verifies the hook receives `e.props.output` and its `Text` elements are findable.
 - **omp tool parameters are a plain JSON Schema** — `TSchema = Type | TJsonSchema`, `TJsonSchema = Record<string, unknown>` (pi-ai dist/types/types.d.ts:1089-1100); validation treats any non-ArkType schema as JSON Schema (pi-ai src/utils/validation.ts:1728-1733). No TypeBox. Verified: `omp -p --no-extensions -e <bundle> --tools quiz` → the model called `quiz`; `tool_execution_end.result.details` = `{status: "unavailable", …}`.
 - **`loadMode: "essential"`**: extension tools default to `"discoverable"` (xd:// devices; pi-coding-agent dist/types/extensibility/extensions/types.d.ts:434, pi-agent-core types.d.ts:831-839). Prompts call `quiz` by name, so it is essential.
 - **omp ignores `promptSnippet`/`promptGuidelines` on extension tools** (`ToolDefinition`, types.d.ts:420-465, has neither; `promptGuidelines` exists only on `ToolInfo`, :485-491). The original guidelines (quiz.ts:925-943) move into the description, which is per harness (names `ask` / `AskUserQuestion` via the tool map).
@@ -45,7 +45,7 @@ Verified while writing this phase (throwaway prototype of this exact code: `tsc`
 | `plugins/quiz/src/core/reducer.ts` | omp dialog reducer |
 | `plugins/quiz/src/core/schema.ts` | per-harness description + JSON Schema |
 | `plugins/quiz/src/core/dialog.ts` | CC dialog question/labels and answer mapping |
-| `plugins/quiz/src/core/output.ts` | (optional Task 10) quiz result from a stored CC tool result |
+| `plugins/quiz/src/core/output.ts` | quiz result from a stored CC tool result |
 | `plugins/quiz/src/tui.ts` | omp dialog render, pure |
 | `plugins/quiz/src/omp-tool.ts` | omp tool: validation, mutex, results, transcript rendering |
 | `plugins/quiz/src/omp.ts` | omp entry: pi-tui dialog glue |
@@ -155,6 +155,16 @@ describe("prepareQuiz", () => {
     expect(prepareQuiz({ ...inOrder, details: "  Think orbits.  " }).context).toBe("Think orbits.");
     expect(prepareQuiz({ ...inOrder, details: "   " }).context).toBeUndefined();
   });
+
+  test.each([
+    ["option value", { options: [{ label: "Mercury", value: 42 }, { label: "Venus", value: "venus" }] }, "quiz option 1 value must be a string"],
+    ["option description", { options: [{ label: "Mercury", value: "mercury", description: false }, { label: "Venus", value: "venus" }] }, "quiz option 1 description must be a string"],
+    ["details", { details: 7 }, "quiz details must be a string"],
+    ["multiSelect", { multiSelect: "true" }, "quiz multiSelect must be a boolean"],
+    ["shuffle", { shuffle: "false" }, "quiz shuffle must be a boolean"],
+  ])("rejects a wrongly typed %s instead of changing the quiz semantics", (_field, change, message) => {
+    expect(() => prepareQuiz({ ...inOrder, ...change })).toThrow(message);
+  });
 });
 
 describe("prepareQuiz with Claude Code's dialog limits", () => {
@@ -238,6 +248,9 @@ function parseQuizInput(raw: unknown): QuizInput {
   if (typeof raw !== "object" || raw === null) throw new QuizInputError("quiz input must be an object");
   // Tool arguments arrive unvalidated in CC; each field is checked below before use.
   const { question, details, options, multiSelect, correctAnswer, explanation, shuffle } = raw as Record<string, unknown>;
+  if (details !== undefined && typeof details !== "string") throw new QuizInputError("quiz details must be a string");
+  if (multiSelect !== undefined && typeof multiSelect !== "boolean") throw new QuizInputError("quiz multiSelect must be a boolean");
+  if (shuffle !== undefined && typeof shuffle !== "boolean") throw new QuizInputError("quiz shuffle must be a boolean");
   if (typeof question !== "string" || question.trim() === "") {
     throw new QuizInputError("quiz question is required: one question per call");
   }
@@ -247,6 +260,8 @@ function parseQuizInput(raw: unknown): QuizInput {
   const parsedOptions = options.map((option: unknown, i): RawQuizOption => {
     const { label, value, description } = (typeof option === "object" && option !== null ? option : {}) as Record<string, unknown>;
     if (typeof label !== "string") throw new QuizInputError(`quiz option ${i + 1} needs a string label`);
+    if (value !== undefined && typeof value !== "string") throw new QuizInputError(`quiz option ${i + 1} value must be a string`);
+    if (description !== undefined && typeof description !== "string") throw new QuizInputError(`quiz option ${i + 1} description must be a string`);
     return {
       label,
       ...(typeof value === "string" ? { value } : {}),
@@ -368,7 +383,7 @@ export function prepareQuiz(raw: unknown, limits: QuizLimits = {}): PreparedQuiz
 **Step 5: Run it to verify it passes**
 
 Run: `npx vitest run plugins/quiz/test/prepare.test.ts && npm run typecheck`
-Expected: 13 tests pass; typecheck exits 0.
+Expected: 18 tests pass; typecheck exits 0.
 
 **Step 6: Build and commit**
 
@@ -571,43 +586,13 @@ Shared by the omp dialog's feedback screen (Task 5), omp's `renderResult` (Task 
 
 **Files:**
 - Modify: `plugins/quiz/src/core/grade.ts` (append)
-- Test: `plugins/quiz/test/feedback.test.ts`
+- Test: `plugins/quiz/test/grade.test.ts` (append, reusing `single`, `primes`, and `pick`)
 
 **Step 1: Write the failing test**
 
-**Create `plugins/quiz/test/feedback.test.ts`:**
+**In `plugins/quiz/test/grade.test.ts`, add `feedbackRows` and `resultLines` to the existing import from `../src/core/grade.ts`, then append:**
 
 ```ts
-import { describe, expect, test } from "vitest";
-import { cancelledDetails, feedbackRows, gradeQuiz, resultLines } from "../src/core/grade.ts";
-import { prepareQuiz } from "../src/core/prepare.ts";
-
-const single = prepareQuiz({
-  question: "Which planet is closest to the Sun?",
-  options: [
-    { label: "Mercury", value: "mercury" },
-    { label: "Venus", value: "venus" },
-    { label: "Mars", value: "mars" },
-  ],
-  correctAnswer: "mercury",
-  explanation: "Mercury orbits at about 0.39 AU.",
-  shuffle: false,
-});
-const primes = prepareQuiz({
-  question: "Which of these numbers are prime?",
-  options: [
-    { label: "2", value: "two" },
-    { label: "3", value: "three" },
-    { label: "4", value: "four" },
-  ],
-  multiSelect: true,
-  correctAnswer: ["two", "three"],
-  explanation: "4 = 2 × 2, so it is not prime.",
-  shuffle: false,
-});
-const pick = (quiz: typeof single, ...indices: number[]) =>
-  indices.map((index) => ({ label: quiz.options[index - 1]!.label, value: quiz.options[index - 1]!.value, index }));
-
 describe("feedback", () => {
   test("marks a wrong pick ✗ and every correct option ✓, including the one the user missed", () => {
     const d = gradeQuiz(primes, { dontKnow: false, answers: pick(primes, 1, 3) });
@@ -637,8 +622,8 @@ describe("feedback", () => {
 
 **Step 2: Run it to verify it fails**
 
-Run: `npx vitest run plugins/quiz/test/feedback.test.ts`
-Expected: FAIL — 4 tests, `TypeError: feedbackRows is not a function` (and `resultLines`).
+Run: `npx vitest run plugins/quiz/test/grade.test.ts`
+Expected: FAIL — the 4 new tests cannot import `feedbackRows`/`resultLines`.
 
 **Step 3: Implement**
 
@@ -690,7 +675,7 @@ export function resultLines(d: QuizResultDetails): StyledLine[] {
 
 **Step 4: Run it to verify it passes**
 
-Run: `npx vitest run plugins/quiz/test/feedback.test.ts plugins/quiz/test/grade.test.ts && npm run typecheck`
+Run: `npx vitest run plugins/quiz/test/grade.test.ts && npm run typecheck`
 Expected: 10 tests pass; typecheck exits 0.
 
 **Step 5: Build and commit**
@@ -1339,6 +1324,25 @@ describe("omp quiz tool", () => {
     expect((await first).details).toMatchObject({ dontKnow: true });
     expect((await second).details).toMatchObject({ question: "Second?", correct: true });
   });
+
+  test("an aborted waiter settles while the first dialog is still unresolved", async () => {
+    const firstOpened = Promise.withResolvers<void>();
+    const firstAnswer = Promise.withResolvers<QuizResponse | null>();
+    const { run, shown } = setup(() => {
+      firstOpened.resolve();
+      return firstAnswer.promise;
+    }, choose("Mercury"));
+    const first = run(planets);
+    await firstOpened.promise;
+    const controller = new AbortController();
+    const second = run({ ...planets, question: "Queued?" }, controller.signal);
+    controller.abort();
+    // This await must finish before firstAnswer is resolved.
+    expect((await second).details).toMatchObject({ status: "cancelled", question: "Queued?" });
+    expect(shown.map((q) => q.question)).toEqual([planets.question]);
+    firstAnswer.resolve({ dontKnow: true, answers: [] });
+    await first;
+  });
 });
 ```
 
@@ -1466,12 +1470,25 @@ export interface QuizUi {
   text(text: string): Component;
 }
 
-// ctx.ui.custom shows one component at a time, so quiz calls take turns.
-let queue: Promise<unknown> = Promise.resolve();
-function serialized<T>(run: () => Promise<T>): Promise<T> {
-  const result = queue.then(run);
-  queue = result.catch(() => undefined);
-  return result;
+// ctx.ui.custom shows one component at a time. An aborted waiter must settle
+// without waiting for the active dialog; its slot still preserves FIFO.
+let queue: Promise<void> = Promise.resolve();
+async function serialized<T>(run: () => Promise<T>, signal: AbortSignal | undefined, onAbort: () => T): Promise<T> {
+  const previous = queue;
+  const slot = Promise.withResolvers<void>();
+  queue = previous.then(() => slot.promise);
+  let wake: (() => void) | undefined;
+  const aborted = new Promise<void>((resolve) => { wake = resolve; });
+  signal?.addEventListener("abort", wake!, { once: true });
+  try {
+    if (signal?.aborted) return onAbort();
+    await Promise.race([previous, aborted]);
+    if (signal?.aborted) return onAbort();
+    return await run();
+  } finally {
+    signal?.removeEventListener("abort", wake!);
+    slot.resolve();
+  }
 }
 
 function answer(details: QuizResultDetails) {
@@ -1508,7 +1525,7 @@ export function registerQuiz(pi: ExtensionAPI, ui: QuizUi): void {
           throw error;
         }
         return answer(response ? gradeQuiz(quiz, response) : cancelledDetails(quiz));
-      });
+      }, signal, () => answer(cancelledDetails(quiz)));
     },
 
     // Never shows options, correctAnswer, or explanation: the call row is drawn before the user answers.
@@ -1535,7 +1552,7 @@ export function registerQuiz(pi: ExtensionAPI, ui: QuizUi): void {
 **Step 5: Run it to verify it passes**
 
 Run: `npx vitest run plugins/quiz/test/omp.test.ts && npm run typecheck`
-Expected: 8 tests pass; typecheck exits 0.
+Expected: 9 tests pass; typecheck exits 0.
 
 **Step 6: Build and commit**
 
@@ -1549,7 +1566,7 @@ git commit -m "feat(quiz): register the omp quiz tool"
 
 ### Task 7: Wire the pi-tui dialog (omp entry) and smoke it
 
-`src/omp.ts` is the only module importing pi-tui at runtime; it maps raw input to reducer events, keeps the note `Editor` in sync, caches lines per width (quiz.ts:562-565, 614-618), and passes `signal` to `ctx.ui.custom`. No Vitest test (pi-tui needs Bun); the smoke below is its test.
+`src/omp.ts` is the only module importing pi-tui at runtime; it maps raw input to reducer events, keeps the note `Editor` in sync, caches lines per width (quiz.ts:562-565, 614-618), and passes `signal` to `ctx.ui.custom`. Keep this glue minimal. Vitest cannot load pi-tui (Bun-only); a PTY test against omp would depend on asynchronous model tool selection and terminal timing, so it is not cheap and deterministic. The interactive smoke in Step 4 is the required proof of this runtime layer, including note input, submit, feedback, and resize; the reducer/render/tool logic has deterministic tests in Tasks 4–6.
 
 **Files:**
 - Create: `plugins/quiz/src/omp.ts`
@@ -1948,29 +1965,30 @@ test("in a non-interactive session the quiz is unavailable and no dialog opens",
   expect(detailsOf(result)).toMatchObject({ status: "unavailable" });
 });
 
-test("more options than the dialog can hold is an error the model can fix", async ($, on) => {
-  stubSession(on);
-  on("tool.call", () => ({ deny: "dialog must not open" }));
-  await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" });
-  const four = { ...planets, options: [...planets.options, { label: "Earth", value: "earth" }] };
-  const answer = await $.tool.call({ tool: QUIZ, ...four });
-  expect(answer).toEqual({ result: expect.stringContaining("at most 3 options"), isError: true });
-});
-
-test("a comma in a multi-select label is an error the model can fix", async ($, on) => {
-  stubSession(on);
-  on("tool.call", () => ({ deny: "dialog must not open" }));
-  await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" });
-  const options = [{ label: "2, the even prime", value: "two" }, ...primes.options.slice(1)];
-  const answer = await $.tool.call({ tool: QUIZ, ...primes, options });
-  expect(answer).toEqual({ result: expect.stringContaining('must not contain ","'), isError: true });
-});
+for (const [name, input, message] of [
+  ["four options", { ...planets, options: [...planets.options, { label: "Earth", value: "earth" }] }, "at most 3 options"],
+  ["comma in multi-select label", { ...primes, options: [{ label: "2, the even prime", value: "two" }, ...primes.options.slice(1)] }, 'must not contain ","'],
+  ["duplicate labels", { ...planets, options: [{ label: "Mercury", value: "mercury" }, { label: "Mercury", value: "venus" }] }, '"Mercury" appears twice'],
+  ["reserved label", { ...planets, options: [{ label: "I don't know", value: "mercury" }, { label: "Venus", value: "venus" }] }, '"I don\'t know" is reserved'],
+  ["duplicate values", { ...planets, options: [{ label: "Mercury", value: "mercury" }, { label: "Venus", value: "mercury" }] }, 'duplicate option value "mercury"'],
+  ["wrongly typed option value", { ...planets, options: [{ label: "Mercury", value: 7 }, ...planets.options.slice(1)] }, "quiz option 1 value must be a string"],
+] as const) {
+  test(`${name} is an error the model can fix without opening a dialog`, async ($, on) => {
+    stubSession(on);
+    let asked = false;
+    on("tool.call", () => { asked = true; return { deny: "dialog must not open" }; });
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" });
+    const answer = await $.tool.call({ tool: QUIZ, ...input });
+    expect(answer).toEqual({ result: expect.stringContaining(message), isError: true });
+    expect(asked).toBe(false);
+  });
+}
 ```
 
 **Step 2: Run it to verify it fails**
 
 Run: `npm run build && npm run test:claude -- quiz`
-Expected: FAIL — all 8 tests (no hook answers `mcp__quiz__quiz` yet, so the AskUserQuestion stub sees a quiz call: `unexpected AskUserQuestion input` / `no quiz-result block`).
+Expected: FAIL — all 12 tests (no hook answers `mcp__quiz__quiz` yet, so the AskUserQuestion stub sees a quiz call: `unexpected AskUserQuestion input` / `no quiz-result block`).
 
 **Step 3: Implement**
 
@@ -2035,7 +2053,7 @@ export function register(on: On, _options: PluginOptions): void {
 **Step 4: Run it to verify it passes**
 
 Run: `npm run build && npm run test:claude -- quiz && npm run validate`
-Expected: `8 pass  0 fail`; validate prints `gating hook with .catch: tool.call{tool=mcp__quiz__quiz}` and `calls: $.tool.register, $.ui.ask`, then passes.
+Expected: `12 pass  0 fail`; validate prints `gating hook with .catch: tool.call{tool=mcp__quiz__quiz}` and `calls: $.tool.register, $.ui.ask`, then passes.
 
 **Step 5: [UNVERIFIED] `isDeferred` in the vendored types**
 
@@ -2053,9 +2071,9 @@ git commit -m "feat(quiz): Claude Code quiz tool on the native ask dialog"
 
 ---
 
-### Task 10 (optional): Draw ✓/✗ feedback in Claude Code's transcript
+### Task 10: Draw ✓/✗ feedback in Claude Code's transcript (required)
 
-Open question 2 resolved yes (see Decisions). Without this task the CC transcript shows the result text including the raw `<quiz-result>{…}` JSON. With it, the quiz's `ToolResult` row draws the same lines as omp's `renderResult` (`resultLines`). Other tools pass through `next(e)`.
+Open question 2 resolved yes (see Decisions). The CC `ToolResult` row must draw the same ✓/✗ lines as omp's `renderResult` (`resultLines`), not show the raw `<quiz-result>{…}` JSON. The kit verifies the render hook receives `props.output`; Step 5 and Task 11 require real-session proof. Other tools pass through `next(e)`.
 
 **Files:**
 - Create: `plugins/quiz/src/core/output.ts`
@@ -2240,9 +2258,9 @@ export function register(on: On, _options: PluginOptions): void {
 **Step 4: Run them to verify they pass**
 
 Run: `npx vitest run plugins/quiz/test/output.test.ts && npm run typecheck && npm run build && npm run test:claude -- quiz && npm run validate`
-Expected: 2 Vitest tests pass; kit `10 pass  0 fail`; validate lists `ui.render{component=ToolResult}` and `$.ui.resolve`, then passes.
+Expected: 2 Vitest tests pass; kit `14 pass  0 fail`; validate lists `ui.render{component=ToolResult}` and `$.ui.resolve`, then passes.
 
-**Step 5: [UNVERIFIED] shape of `output` in a real session** — covered by Task 11 step 5 (the row must show ✓/✗ lines, not the JSON). `quizDetailsFromOutput` accepts both a string and text blocks; if the real row still shows raw text, add a temporary `$.ui.log(JSON.stringify(e.props.output).slice(0, 300), { to: "debug" })` in the hook, read the debug log, extend `quizDetailsFromOutput` + `output.test.ts` with that shape, and remove the log.
+**Step 5: Verify `output` in a real session** — Task 11 Step 3 requires the row to show ✓/✗ lines, not raw JSON. `quizDetailsFromOutput` accepts both a string and text blocks; if the real row still shows raw text, add a temporary `$.ui.log(JSON.stringify(e.props.output).slice(0, 300), { to: "debug" })` in the hook, read the debug log, extend `quizDetailsFromOutput` + `output.test.ts` with that shape, remove the log, and repeat the real-session check. Do not complete Task 10 without this proof.
 
 **Step 6: Commit**
 
@@ -2296,7 +2314,7 @@ omp plugin link /home/marcus/tmp/learn/learning-plugins/dist/omp/quiz
 | Chat about this | SINGLE, choose "Chat about this" | cancelled |
 | details | DETAILS | dialog shows the question, a blank line, then `Think about orbital radius.` [UNVERIFIED multi-line rendering]. If the dialog collapses or garbles it, change `dialogQuestion` to join with ` — ` and update its test |
 | too many options | FOUR | model gets the `at most 3 options` error; no dialog |
-| transcript (Task 10) | after any answered case | the tool's result row shows `✓/✗ N. label` lines and the verdict, no `<quiz-result>` JSON |
+| transcript (required Task 10) | after single and multi answers | the tool's result row shows `✓/✗ N. label` lines and the verdict, no `<quiz-result>` JSON; this real-session check is required for acceptance |
 
 **Step 4: Print mode**
 
@@ -2323,11 +2341,24 @@ In a new `omp` session: `/md-log /tmp/quiz-md-omp.md`, then SINGLE → choose **
 In `claude --plugin-dir …/dist/claude/quiz --plugin-dir …/dist/claude/md-log`: `/md-log /tmp/quiz-md-cc.md`, then SINGLE → **Venus**; then SINGLE → type `never learned this` under **Other**.
 
 ```bash
-q() { awk '/^> \[!(question|success|failure|warning)\] Quiz/{p=1} p&&/^$/{p=0} p' "$1"; }
-diff <(q /tmp/quiz-md-omp.md) <(q /tmp/quiz-md-cc.md) && echo IDENTICAL
+q() {
+  awk '
+    /^> \[!question\] Quiz$/ { question++; block=1 }
+    /^> \[!failure\] Quiz — incorrect ✗$/ { wrong++; block=1 }
+    /^> \[!question\] Quiz — I don.t know$/ { unknown++; block=1 }
+    block && /^> Your answer: I don.t know$/ { answer++ }
+    block && /^> .*never learned this/ { note++ }
+    block && /^$/ { block=0 }
+    block { print }
+    END { if (question != 2 || wrong != 1 || unknown != 1 || answer != 1 || note != 1) exit 1 }
+  ' "$1"
+}
+q /tmp/quiz-md-omp.md > /tmp/quiz-md-omp-blocks.md &&
+q /tmp/quiz-md-cc.md > /tmp/quiz-md-cc-blocks.md &&
+diff /tmp/quiz-md-omp-blocks.md /tmp/quiz-md-cc-blocks.md && echo IDENTICAL
 ```
 
-Expected: `IDENTICAL`; each note has two `> [!question] Quiz` blocks whose numbered options match the order each dialog showed, then `> [!failure] Quiz — incorrect ✗` and `> [!question] Quiz — I don't know` with the note. If the question blocks differ, check first that both tool calls carried identical arguments (`omp`'s session log / CC's transcript); a model that rephrased the question changes the seed — rerun, not a bug. Any other difference is a bug in the md-log or quiz adapter that produced it.
+Expected: `IDENTICAL`; extraction includes both question and answer callouts, and fails unless each note has two `> [!question] Quiz` blocks with numbered options, one `> [!failure] Quiz — incorrect ✗`, and one `> [!question] Quiz — I don't know` containing the note. If question blocks differ, first check identical tool arguments (`omp` session log / CC transcript); a rephrased question changes the shuffle seed — rerun. Any other difference is a bug in md-log or quiz.
 
 **Step 7: Clean up**
 
