@@ -29,19 +29,22 @@ Phases run in order. Within a phase, tasks run in order unless the phase file sa
 - **TDD:** red → green → refactor, one behaviour per test. A test earns its place only if a plausible bug fails it; no tests of wiring, defaults, or source text. Follow `skill://testing-philosophy`.
 - **Commits:** one commit per task, Conventional Commits (`feat(md-log): …`, `test(build): …`, `chore: …`). Run `npm run build` before committing any change under `plugins/`, `shared/`, or `build/` so `dist/` stays fresh; `npm run check` must pass at every commit.
 - **No speculative generality.** Build only what a phase needs. Later phases extend shared files additively.
+- **Never `omp plugin install --scope project`** from this repo: the project registry resolves to `../.omp`. Use user scope or `omp plugin link`.
+- **Golden files:** agent shells export `CI=true`, so Vitest fails on a missing file snapshot instead of writing it. Create goldens with `npx vitest run -u <file>` and review the diff.
+- **omp tools** register with `loadMode: "essential"`; the default `"discoverable"` mounts them as `xd://` devices, so agents could not call them by name (`types.d.ts:434`).
 
 ## Commands (contract; created in Phase 1)
 
 | Command | Does |
 |---|---|
-| `npm run typecheck` | `tsc -p tsconfig.json --noEmit` over `build/`, `shared/`, `test-support/`, `plugins/*/src`, `plugins/*/test` |
+| `npm run typecheck` | `tsc -p tsconfig.json --noEmit` over `build/`, `shared/`, `test-support/`, `plugins/*/src`, `plugins/*/test`, `types/claude-code/`, `vitest.config.ts` |
 | `npm test` | `vitest run` (all Vitest suites) |
 | `npx vitest run <path> -t "<name>"` | one test |
 | `npx vitest run -u <path>` | update file snapshots (golden files) after a deliberate change |
 | `npm run build` | `node build/cli.ts build`: regenerate `dist/` and both catalogs |
 | `npm run check` | `node build/cli.ts check`: rebuild in memory, exit 1 listing every stale, missing, or extra generated file |
-| `npm run validate` | `node build/cli.ts validate`: `claude plugin validate --strict` on the repo root and every `dist/claude/*` |
-| `npm run test:claude [-- <plugin>]` | `node build/cli.ts test-claude`: assemble `.test-build/claude/<plugin>` (dist tree + `plugins/<plugin>/test/claude/**`) and run `claude plugin test` on it |
+| `npm run validate` | `node build/cli.ts validate`: `claude plugin validate --strict` on the repo root and every `dist/claude/*`; with no plugins it prints `nothing to validate` and exits 0 (CC rejects an empty marketplace under `--strict`) |
+| `npm run test:claude [-- <plugin>]` | `node build/cli.ts test-claude`: assemble `.test-build/claude/<plugin>` (dist tree + `plugins/<plugin>/test/claude/**`) and run `claude plugin test` on it. CC test files may import only `claude-code/testing` and files under their own `test/claude/` |
 | `npm run types:claude -- <dir>` | `node build/cli.ts refresh-claude-types <dir>`: copy CC-generated declaration files from `<dir>` into `types/claude-code/` |
 
 ## Shared contracts
@@ -73,17 +76,17 @@ These are fixed here so phases written and executed separately agree. A phase th
 ### Generated trees
 
 ```
-dist/claude/<name>/.claude-plugin/plugin.json   {name, version, description, author: {name: "Marcus Xavier"}, dependencies?}
+dist/claude/<name>/.claude-plugin/plugin.json   {name, version, description, author: {name: "Marcus Xavier"}, dependencies?}   (dependencies only when non-empty)
 dist/claude/<name>/hooks/hooks.json             {"modules": ["./register.js"]}       (only if src/claude.ts)
 dist/claude/<name>/hooks/register.js            esbuild, format esm, platform neutral, externals: claude-code
-dist/omp/<name>/package.json                    {name: "@learning-plugins/<name>", version, description, type: "module", omp: {extensions: ["./extension.js"]}}
+dist/omp/<name>/package.json                    {name: "@learning-plugins/<name>", version, description, type: "module", omp?: {extensions: ["./extension.js"]}}   (omp key only if src/omp.ts)
 dist/omp/<name>/extension.js                    esbuild, format esm, platform node, externals: @oh-my-pi/*, @sinclair/typebox, node:*
 dist/<harness>/<name>/agents/*.md, skills/**    rendered prompts
-.claude-plugin/marketplace.json                 {name: "learning-plugins", owner: {name: "Marcus Xavier"}, plugins: [{name, source: "./dist/claude/<name>", description, version}]}
+.claude-plugin/marketplace.json                 {name: "learning-plugins", description: "Learning workflow plugins for Oh My Pi and Claude Code, built from one source tree.", owner: {name: "Marcus Xavier"}, plugins: [{name, source: "./dist/claude/<name>", description, version}]}
 .omp-plugin/marketplace.json                    same shape, source "./dist/omp/<name>"
 ```
 
-All JSON is `JSON.stringify(value, null, 2) + "\n"`. Plugins are listed in directory-name order. Build output must be byte-identical across runs.
+All JSON is `JSON.stringify(value, null, 2) + "\n"`. Plugins are listed in directory-name order. Build output must be byte-identical across runs. The top-level catalog `description` is required by CC `validate --strict`; omp ignores unknown keys (`fetcher.ts:108-201`). No plugin needs `@sinclair/typebox`: omp 18.2.10 accepts plain JSON Schema for `registerTool` parameters.
 
 ### Build module API (`build/`)
 
@@ -106,6 +109,8 @@ export function renderSkill(path: string, text: string, harness: Harness): strin
 // build/plugin-tree.ts
 export type Tree = Map<string, string | Uint8Array>;                    // relative path → content
 export function buildTree(src: PluginSource, harness: Harness): Promise<Tree>;
+export function renderPrompts(src: PluginSource, harness: Harness): Promise<Tree>; // keys agents/<n>.md, skills/<s>/** (SKILL.md rendered, rest copied)
+export function listFiles(dir: string): Promise<string[]>;                         // sorted, "/"-separated, relative; [] when dir is missing
 
 // build/catalog.ts
 export function catalog(harness: Harness, plugins: PluginSource[]): string;   // serialized JSON
@@ -113,13 +118,14 @@ export function catalog(harness: Harness, plugins: PluginSource[]): string;   //
 // build/repo.ts
 export function buildRepo(root: string): Promise<Tree>;                 // keys are repo-relative
 export function writeRepo(root: string, files: Tree): Promise<void>;    // replaces dist/ wholesale, writes catalogs
-export function diffRepo(root: string, files: Tree): Promise<string[]>; // ["stale: …", "missing: …", "extra: …"]
+export function diffRepo(root: string, files: Tree): Promise<string[]>; // sorted ["extra: …", "missing: …", "stale: …"]; ignores dist/claude/*/.claude-plugin/types/** and dist/claude/*/tsconfig.json (written by CC on --plugin-dir loads)
 ```
 
 ### Tool and agent map: `shared/tool-map.ts`
 
 ```ts
 export type Harness = "omp" | "claude";                        // the one definition; build/ imports it from here
+export const HARNESSES: readonly Harness[];                    // ["omp", "claude"]
 export const TOOLS: Record<string, Record<Harness, string>>;   // abstract id → per-harness name
 export const AGENTS: Record<string, Record<Harness, string>>;  // "<plugin>/<agent>" → per-harness name
 export function toolName(id: string, h: Harness): string;      // throws on unknown id
@@ -145,7 +151,11 @@ Body with {{tool:quiz}}, {{agent:visual-tools/mermaid-maker}}, and
 {{dispatch:visual-tools/mermaid-maker|<your minimal, concrete brief>}}.
 ```
 
-Rendered frontmatter key order: `name`, `description`, `tools`, `model`, then `harness.<h>` keys in source order. Skills take `name`, `description`, and `harness`; `tools`/`model` in a skill are a `PromptError`. `{{dispatch:…}}` expands to a fenced example call that matches the real tool schema: omp's `task` tool (`context` required, `tasks: [{agent, task}]`) and CC's `Agent` tool (`description`, `prompt`, `subagent_type`). Errors (all `PromptError`): unknown placeholder kind, unknown tool or agent id, missing per-harness `model` on an agent, and legacy literals outside placeholders: `ask_user_question`, `subagent(`, `web_fetch`.
+Rendered frontmatter key order: `name`, `description`, `tools`, `model`, then `harness.<h>` keys in source order. Skills take `name`, `description`, and `harness`; `tools`/`model` in a skill are a `PromptError`. Tools render deduplicated, joined with `", "`. Output is `---\n` + `yaml.stringify(fm, {lineWidth: 0})` + `---\n` + `body.trimEnd()` + `\n`.
+
+`{{dispatch:…}}` must stand alone on its line and expands, keeping the line's indentation, to "Call the `task` tool:", a blank line, and a ```json block of `{context: "<background the agent needs beyond the brief>", tasks: [{agent, task: brief}]}` (omp), or "Call the `Agent` tool:", a blank line, and a ```json block of `{description: "<3-5 word summary of the brief>", prompt: brief, subagent_type}` (CC).
+
+Errors (all `PromptError`): unknown placeholder kind; unknown tool or agent id; missing per-harness `model` on an agent; unknown top-level frontmatter key (extras go under `harness.<h>`); a `harness.<h>` key colliding with `name`/`description`/`tools`/`model`; a dispatch not alone on its line; missing frontmatter; a skill dir without `SKILL.md`; legacy literals left in the body after placeholders are removed: `ask_user_question`, `subagent(`, `web_fetch`.
 
 ### Quiz contract: `shared/quiz-contract.ts` (created in Phase 2, consumed by Phases 2 and 3)
 
@@ -168,16 +178,19 @@ export interface QuizResultDetails {
 /** Trim; value defaults to label; drop empty labels; throw `duplicate option value "<v>"`. Port of quiz.ts:124-140. */
 export function normalizeOptions(raw: readonly RawQuizOption[]): QuizOption[];
 /** Normalized options in display order. shuffle !== false → Fisher–Yates driven by mulberry32 seeded with
- *  FNV-1a-32 of `question + "\u0000" + values.join("\u0000")`. Same input → same order, in every harness. */
+ *  FNV-1a-32 over the UTF-8 bytes of `question + "\u0000" + values.join("\u0000")`. Same input → same order, in every harness. */
 export function displayOrder(input: Pick<QuizInput, "question" | "options" | "shuffle">): QuizOption[];
 export function displayedOptions(order: readonly QuizOption[]): DisplayedOption[];
-export function encodeQuizResult(d: QuizResultDetails): string;             // `<quiz-result>${JSON.stringify(d)}</quiz-result>`
-export function decodeQuizResult(text: string): QuizResultDetails | undefined; // first block; undefined when absent or malformed
+/** `<quiz-result>${JSON.stringify(d) with "<" written as \u003c}</quiz-result>`, so a payload cannot close the block early. */
+export function encodeQuizResult(d: QuizResultDetails): string;
+/** First block; undefined when absent, unterminated, malformed, or not isQuizResultDetails. */
+export function decodeQuizResult(text: string): QuizResultDetails | undefined;
+export function isQuizResultDetails(value: unknown): value is QuizResultDetails;
 ```
 
 ### Test support: `test-support/` (created in Phase 1, extended additively)
 
-- `test-support/fake-omp.ts`: `createFakeOmp()` returns `{ api, emit(event, payload, ctx?), commands, tools, entries, notifications, ctx }`. `api` satisfies the subset of omp's `ExtensionAPI` the plugins use and is typed against `@oh-my-pi/pi-coding-agent/extensibility/extensions`. `emit` runs every handler registered for an event in registration order and returns their results.
+- `test-support/fake-omp.ts`: `createFakeOmp(options?: { cwd?: string; hasUI?: boolean })` returns `{ api, emit(event, payload?, ctx?), commands: Map<name, {description?, handler}>, tools: Map<name, ToolDefinition>, entries: {customType, data}[], notifications: {message, type?}[], ctx }`. `api` is typed against `@oh-my-pi/pi-coding-agent/extensibility/extensions`. `ctx` is one mutable object cast to `ExtensionCommandContext` with `cwd`, `hasUI`, `mode: "tui"`, `ui.notify`. `emit` awaits handlers sequentially in registration order and returns their results. Phase 2 adds `idle` (backs `ctx.isIdle()`), `branch: SessionEntry[]` (backs `ctx.sessionManager.getBranch()`; `appendEntry` also pushes a custom entry), and `statuses` (records `ctx.ui.setStatus`).
 - CC adapters are tested only with `claude plugin test` (`import { expect, test } from 'claude-code/testing'`), never with a home-made fake of `$`.
 
 ## Acceptance tests (definition of done for the whole project)
