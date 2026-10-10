@@ -40,7 +40,7 @@ learning-plugins/
 ├── .claude-plugin/marketplace.json   # GENERATED CC catalog   → ./dist/claude/<plugin>
 ├── .omp-plugin/marketplace.json      # GENERATED omp catalog  → ./dist/omp/<plugin>
 ├── package.json, package-lock.json   # npm workspaces, scripts, pinned dev deps
-├── tsconfig.base.json
+├── tsconfig.json
 ├── vitest.config.ts
 ├── build/                            # build + generator code (TypeScript, tested)
 ├── shared/                           # cross-plugin code: tool map, quiz contract
@@ -146,7 +146,7 @@ Abstract tool and agent ids resolve per harness. The prompt generator and md-log
 
 **omp adapter**
 
-- Registers commands with `pi.registerCommand` and persists the link with `pi.appendEntry`, restored on `session_start`.
+- Registers commands with `pi.registerCommand` and persists the link with `pi.appendEntry`, restored on `session_start` and `session_switch` (`/new`, `/resume`, and fork emit `session_switch`; `session_start` fires once at startup).
 - User and assistant text come from `message_end`.
 - **Q&A**:
   - The question is written on `tool_call` for `quiz` (order from the quiz contract) and for the native `ask` (input `questions[]`: `{id, question, header?, options[{label, description?}], multi?, recommended?}`, from `@oh-my-pi/pi-coding-agent@18.2.10` `tools/ask.d.ts`).
@@ -156,7 +156,7 @@ Abstract tool and agent ids resolve per harness. The prompt generator and md-log
 
 **CC adapter**
 
-- **Commands**: `$.command.register({name: 'md-log', argumentHint: '<filepath>', immediate: true})`, handled by `command.run`. `immediate` means no model turn.
+- **Commands**: `$.command.register({name: 'md-log', argumentHint: '<filepath>'})` without `immediate`, handled by `command.run`. `immediate` would run it mid-turn (`cc.d.ts:1579-1587`); without it CC defers `/md-log` until the turn ends, which is CC's form of "refuses while busy". `/md-unlog` is `immediate: true`. Neither costs a model turn.
 - **User prompts**: `prompt.submit`, logged after `await next(e)`, so dropped prompts are skipped and rewritten prompts are logged as sent.
 - **Assistant prose**: `turn.step`. The adapter does `const r = yield* next(e)` and logs `r.answer` for each model request. That captures the prose written before tool calls, which `turn.complete` (final answer only) would miss. Steps carrying `agentId` (subagents) are skipped.
 - **Q&A**, independent of mod order.
@@ -165,7 +165,7 @@ Abstract tool and agent ids resolve per harness. The prompt generator and md-log
   - **Answer**: those uses are kept as pending. At the next `turn.step` start, and at `turn.complete`, md-log reads `$.session.messages()` and takes the results of the pending uses from the latest assistant message's `toolUses[].result`, matched by tool name and input in order. For quiz, the answer comes from the `<quiz-result>` block. For `AskUserQuestion`, it comes from `result.answers`, a map from question to label.
   - Steps carrying `agentId` are skipped.
 - **Backfill**: `$.session.messages()` (`{role, text, toolUses, toolResults}`), with Q&A paired from `toolUses`/`toolResults`.
-- **Writes**: `$.fs.write` has no append, is not atomic, and rejects anything over 4 MiB. The adapter reads, concatenates, and writes under the queue. At the 4 MiB cap it unlinks the note and shows a toast saying why. This is a deliberate divergence from omp, which has no cap.
+- **Writes**: `$.fs.write` has no append, is not atomic, and rejects anything over 4 MiB. The adapter reads, concatenates, and writes under the queue. At the 4 MiB cap it stops logging (clears the link; `$.fs` has no delete) and shows a toast saying why. This is a deliberate divergence from omp, which has no cap. The link is also cleared on `session.end`.
 
 ### quiz
 
@@ -212,8 +212,8 @@ Abstract tool and agent ids resolve per harness. The prompt generator and md-log
 
 **State keying**
 
-- omp: each maker subagent runs in its own process, as today.
-- CC: one module serves every agent loop, so state is keyed by the tool call's `agentId` (`main` when absent). Read-modify-write and render are serialized per key.
+- omp: subagents share one process, and the extension factory runs once per session (`src/sdk.ts:2203-2205`), so state lives in the factory closure.
+- CC: one module serves every agent loop, so state is keyed by the tool call's `agentId` (`main` when absent). Sources are in memory and each read-modify-write is synchronous, so per-key serialization holds by construction; a promise queue would count against the 10 s hook budget.
 
 **Renderer**
 
