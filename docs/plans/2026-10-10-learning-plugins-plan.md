@@ -186,6 +186,9 @@ export function displayedOptions(order: readonly QuizOption[]): DisplayedOption[
 export function encodeQuizResult(d: QuizResultDetails): string;
 /** First block; undefined when absent, unterminated, malformed, or not isQuizResultDetails. */
 export function decodeQuizResult(text: string): QuizResultDetails | undefined;
+/** Validate formatter fields: status/question/mode; answers with positive 1-based integer index,
+ *  string label/value; positive integer correctIndices; optional displayed options with positive index/string
+ *  label; optional context/note/explanation/message strings and correct/dontKnow booleans. */
 export function isQuizResultDetails(value: unknown): value is QuizResultDetails;
 ```
 

@@ -47,7 +47,7 @@ Delivers `shared/quiz-contract.ts`, the md-log core (entry model, formatter, har
 | `TextEncoder` available in the mod runtime (no Node APIs) | mods/api.md:263 |
 | Kit: stubs `on('<ns>.<call>', ($, e) => ({ value }))` or `({ deny })` to reject; `turn.step` stub is a generator; register stubs before the first `$` call; `e.path` arrives absolute | mods/test.md:57-195 |
 
-**Already proven in a throwaway prototype (/tmp/mdlog-proto, against these exact files):** all Vitest suites below pass under Vitest 5.0.3 and `tsc` 7.0.2 strict + `noUncheckedIndexedAccess`. The bundled `register.js` passes `claude plugin test` (9/9) and `claude plugin validate --strict` on CC 2.1.296 with an empty HOME. The validator accepts `$` used inside closures handed to the core queue (it reports `$.fs.read (via appendToNote)`).
+**Prototype baseline (/tmp/mdlog-proto):** before the review changes, the Vitest suites passed under Vitest 5.0.3 and `tsc` 7.0.2 strict + `noUncheckedIndexedAccess`; bundled `register.js` passed `claude plugin test` (9/9) and `claude plugin validate --strict` on CC 2.1.296 with empty HOME. The validator accepted `$` inside closures handed to the core queue (`$.fs.read (via appendToNote)`). These results do not cover the new review regressions; Tasks 1–8 specify their expected fresh outcomes.
 
 **Design deviations (requested contract and design changes are listed at the end of this file):**
 - CC `/md-log` is registered **without** `immediate`. `immediate` makes a command run mid-turn (cc.d.ts:1579-1587), the opposite of what the design wanted. Without it, CC defers `/md-log` typed mid-turn until the turn ends, so the backfill never races a turn. That is CC's form of "refuses while busy". `/md-unlog` is `immediate: true`.
@@ -180,11 +180,17 @@ describe("encodeQuizResult / decodeQuizResult", () => {
     expect(decodeQuizResult("<quiz-result>{status: answered}</quiz-result>")).toBeUndefined();
   });
 
-  test("returns undefined when the JSON is not quiz result details", () => {
-    expect(decodeQuizResult("<quiz-result>{}</quiz-result>")).toBeUndefined();
-    expect(decodeQuizResult(`<quiz-result>${JSON.stringify({ ...DETAILS, status: "graded" })}</quiz-result>`))
-      .toBeUndefined();
-    expect(decodeQuizResult(`<quiz-result>${JSON.stringify({ ...DETAILS, answers: "none" })}</quiz-result>`))
+  test.each([
+    { answers: "none" },
+    { answers: [null] },
+    { answers: [{ label: "A", value: "A", index: 0 }] },
+    { correctIndices: [null] },
+    { options: [null] },
+    { options: [{ index: 1, label: 42 }] },
+    { note: 12 },
+    { status: "graded" },
+  ])("rejects a malformed quiz result field: %j", (change) => {
+    expect(decodeQuizResult(`<quiz-result>${JSON.stringify({ ...DETAILS, ...change })}</quiz-result>`))
       .toBeUndefined();
   });
 });
@@ -276,15 +282,26 @@ export function displayedOptions(order: readonly QuizOption[]): DisplayedOption[
 const STATUSES: Record<string, true> = { answered: true, cancelled: true, unavailable: true };
 const MODES: Record<string, true> = { "single-select": true, "multi-select": true };
 
-/** Structural check of a decoded or `details`-delivered quiz result. */
+/** Check everything the formatter reads before accepting untrusted tool details or embedded JSON. */
 export function isQuizResultDetails(value: unknown): value is QuizResultDetails {
-  if (typeof value !== "object" || value === null) return false;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const d = value as Record<string, unknown>;
+  const optionalString = (field: string) => d[field] === undefined || typeof d[field] === "string";
+  const optionalBoolean = (field: string) => d[field] === undefined || typeof d[field] === "boolean";
+  const index = (n: unknown) => Number.isSafeInteger(n) && (n as number) > 0;
+  const record = (v: unknown): v is Record<string, unknown> =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
   return STATUSES[String(d.status)] === true
     && typeof d.question === "string"
     && MODES[String(d.mode)] === true
+    && ["context", "note", "explanation", "message"].every(optionalString)
+    && ["correct", "dontKnow"].every(optionalBoolean)
     && Array.isArray(d.answers)
-    && Array.isArray(d.correctIndices);
+    && d.answers.every((a: unknown) => record(a) && index(a.index)
+      && typeof a.label === "string" && typeof a.value === "string")
+    && Array.isArray(d.correctIndices) && d.correctIndices.every(index)
+    && (d.options === undefined || (Array.isArray(d.options)
+      && d.options.every((o: unknown) => record(o) && index(o.index) && typeof o.label === "string")));
 }
 
 const OPEN = "<quiz-result>";
@@ -313,7 +330,7 @@ export function decodeQuizResult(text: string): QuizResultDetails | undefined {
 
 **Step 4: Run, expect pass**
 
-Run: `npx vitest run shared/quiz-contract.test.ts` → 12 passed. Then `npm run typecheck` → exit 0.
+Run: `npx vitest run shared/quiz-contract.test.ts` → 19 passed. Then `npm run typecheck` → exit 0.
 
 **Step 5: Build and commit**
 
@@ -329,6 +346,7 @@ git commit -m "feat(shared): add quiz contract (deterministic shuffle, result bl
 
 **Files:**
 - Create: `plugins/md-log/package.json`, `plugins/md-log/src/core/entries.ts`, `plugins/md-log/src/core/format.ts`
+- Modify: root `package-lock.json` via `npm install` after creating the workspace package.
 - Test: `plugins/md-log/test/entries.test.ts`, `plugins/md-log/test/format.test.ts`, `plugins/md-log/test/golden/blocks.md`
 
 `plugins/md-log/package.json` (the catalogs list md-log from this commit; it does nothing until Task 7):
@@ -342,6 +360,7 @@ git commit -m "feat(shared): add quiz contract (deterministic shuffle, result bl
   "description": "Mirror the session (prompts, prose, quiz and question answers) into a markdown note."
 }
 ```
+Run `npm install` from the repository root immediately after creating this workspace package, before Task 2's first build/check. This updates the root `package-lock.json` workspace entry; `npm ci` in a clean clone rejects a stale lockfile.
 
 **Step 1: Write the failing tests and the golden file**
 
@@ -785,13 +804,13 @@ export function appendBlocks(current: string, blocks: readonly string[]): string
 
 **Step 4: Run, expect pass**
 
-Run the same command → all pass (entries 9, format 4). `npm run typecheck` → exit 0.
+Run the same command → all pass (entries 8, format 4). `npm run typecheck` → exit 0.
 
 **Step 5: Build and commit**
 
 ```bash
 npm run build && npm run check
-git add plugins/md-log dist .claude-plugin .omp-plugin
+git add plugins/md-log package-lock.json dist .claude-plugin .omp-plugin
 git commit -m "feat(md-log): add entry model and markdown formatter"
 ```
 
@@ -982,7 +1001,8 @@ export const CLAUDE_MESSAGES: ClaudeMessage[] = [
 
 ```ts
 import { describe, expect, test } from "vitest";
-import { ompToolCallEntries, ompToolResultEntries } from "../src/core/from-omp.ts";
+import { backfillFromOmp, ompToolCallEntries, ompToolResultEntries } from "../src/core/from-omp.ts";
+import { formatEntry } from "../src/core/format.ts";
 import { QUIZ_DETAILS, QUIZ_INPUT } from "./fixtures/session.ts";
 
 const ASK_INPUT = {
@@ -1015,6 +1035,15 @@ describe("omp ask answers", () => {
       { kind: "ask-answer", outcome: { status: "answered", items: [] } },
     ]);
   });
+  test("a partial or malformed multi-question result never invents an empty answer", () => {
+    const entries = ompToolResultEntries("ask", ASK_INPUT, ok({
+      results: [{ id: "lang", selectedOptions: ["Go"] }],
+    }, "Only one question returned"));
+    expect(entries).toEqual([
+      { kind: "ask-answer", outcome: { status: "answered", items: [{ kind: "option", index: 2, label: "Go" }] } },
+      { kind: "ask-answer", outcome: { status: "unavailable", message: "Only one question returned" } },
+    ]);
+  });
 
   test("'Chat about this' counts as cancelled for every question", () => {
     expect(ompToolResultEntries("ask", ASK_INPUT, ok({ chatRedirect: true, questions: ["Which language?", "Which extras?"] })))
@@ -1043,6 +1072,23 @@ describe("omp quiz answers", () => {
     expect(ompToolResultEntries("quiz", QUIZ_INPUT, { details: undefined, isError: true, text: "boom" }))
       .toMatchObject([{ kind: "quiz-answer", details: { status: "unavailable", message: "boom" } }]);
   });
+  test("malformed nested quiz details become an unavailable callout, not a formatter crash", () => {
+    const entry = ompToolResultEntries("quiz", QUIZ_INPUT, ok({ ...QUIZ_DETAILS, answers: [null] }, "bad result"))[0]!;
+    expect(entry).toMatchObject({ kind: "quiz-answer", details: { status: "unavailable", message: "bad result" } });
+    expect(formatEntry(entry)).toBe("> [!warning] Quiz — unavailable\n> bad result");
+  });
+});
+
+test("backfill preserves prose around an interleaved tool call", () => {
+  const entries = backfillFromOmp([
+    { role: "assistant", content: [
+      { type: "text", text: "Before." },
+      { type: "toolCall", id: "q", name: "quiz", arguments: QUIZ_INPUT },
+      { type: "text", text: "After." },
+    ] },
+  ]);
+  expect(entries.map((entry) => entry.kind)).toEqual(["assistant", "question", "assistant"]);
+  expect(entries[2]).toEqual({ kind: "assistant", text: "After." });
 });
 
 test("tools other than quiz and ask log nothing", () => {
@@ -1119,8 +1165,9 @@ function ompAskOutcomes(input: unknown, result: OmpToolResult): AskOutcome[] {
   if (!results) return questions.map(() => unavailable);
   return questions.map((q, i) => {
     const r = results[i];
-    const items = (Array.isArray(r?.selectedOptions) ? r.selectedOptions : [])
-      .map((label) => answerItem(asText(label), q.options));
+    if (!r || !Array.isArray(r.selectedOptions) || !r.selectedOptions.every((label) => typeof label === "string"))
+      return unavailable;
+    const items = r.selectedOptions.map((label) => answerItem(label as string, q.options));
     if (typeof r?.customInput === "string") items.push({ kind: "other", text: r.customInput });
     const note = asText(r?.note).trim() || undefined;
     return note ? { status: "answered", items, note } : { status: "answered", items };
@@ -1136,23 +1183,44 @@ export function ompToolResultEntries(tool: string, input: unknown, result: OmpTo
   return [];
 }
 
-/**
- * The active branch's messages as entries, in the order live logging writes them: prose, then the
- * questions of that message's quiz/ask calls, then each call's answer at its tool result.
- */
+/** Walk assistant blocks in order, flushing contiguous prose around each question tool. */
+export function ompAssistantEntries(message: OmpMessage): Entry[] {
+  if (message.role !== "assistant" || !Array.isArray(message.content)) return [];
+  const out: Entry[] = [];
+  let text: string[] = [];
+  const flush = () => {
+    const prose = assistantEntry(text);
+    if (prose) out.push(prose);
+    text = [];
+  };
+  for (const block of message.content) {
+    const b = asRecord(block);
+    if (b?.type === "text") text.push(asText(b.text));
+    if (b?.type === "toolCall") {
+      const calls = ompToolCallEntries(asText(b.name), b.arguments);
+      if (calls.length === 0) continue;
+      flush();
+      out.push(...calls);
+    }
+  }
+  flush();
+  return out;
+}
+
+/** Active-branch entries retain content-block order, with each tool's answer at its result. */
 export function backfillFromOmp(messages: readonly OmpMessage[]): Entry[] {
   const inputs = new Map<string, unknown>();
   const out: Entry[] = [];
   for (const message of messages) {
-    const prose = ompTextEntry(message);
-    if (prose) out.push(prose);
+    if (message.role === "user") {
+      const entry = ompTextEntry(message);
+      if (entry) out.push(entry);
+    }
     if (message.role === "assistant" && Array.isArray(message.content)) {
+      out.push(...ompAssistantEntries(message));
       for (const block of message.content.map(asRecord)) {
-        if (block?.type !== "toolCall") continue;
-        const name = asText(block.name);
-        const calls = ompToolCallEntries(name, block.arguments);
-        if (calls.length > 0) inputs.set(asText(block.id), block.arguments);
-        out.push(...calls);
+        if (block?.type === "toolCall" && ompToolCallEntries(asText(block.name), block.arguments).length > 0)
+          inputs.set(asText(block.id), block.arguments);
       }
     }
     if (message.role === "toolResult") {
@@ -1169,7 +1237,7 @@ export function backfillFromOmp(messages: readonly OmpMessage[]): Entry[] {
 }
 ```
 
-**Step 4:** Same command → 7 passed. `npm run typecheck` reports only the missing `../../src/core/from-claude.ts` (created in Task 5). Typecheck again at the end of Task 5. `npm run check` is the per-commit gate and passes.
+**Step 4:** Same command → 10 passed. `npm run typecheck` reports only the missing `../../src/core/from-claude.ts` (created in Task 5). Typecheck again at the end of Task 5. `npm run check` is the per-commit gate and passes.
 
 **Step 5:**
 
@@ -1187,15 +1255,18 @@ git commit -m "feat(md-log): map omp messages and tool events to entries"
 - Create: `plugins/md-log/src/core/from-claude.ts`
 - Test: `plugins/md-log/test/from-claude.test.ts`
 
-Pairing rule (design: by tool name and input, in order). Scanning back from the newest record, each pending use takes the latest earlier record that has the same tool, the same canonical (key-sorted) JSON input, and an unconsumed `tool_use_id`. Only the answered prefix is returned, so answers are written in order. The scan covers every assistant message, not only the latest, because CC may store a response's blocks as separate messages.
+Pairing rule (design: by tool name and input, in order). Walk unconsumed transcript uses from oldest to newest and bind each pending use to the first matching name and canonical (key-sorted) JSON input at or after the prior match. A still-in-flight earlier identical call must never borrow a later call's answer: when a repeated-input group lacks all of its transcript occurrences, defer the ambiguous group. Only the answered prefix is returned; `tool_use_id`s already consumed by backfill or an earlier settlement are skipped, and when a turn ends, QA records still without an outcome are retired (marked consumed) so a dead occurrence from an aborted turn never captures a later identical question's answer. Scan every assistant message, because CC may store a response's blocks as separate messages.
+
+CC `SessionMessage` exposes only `text` plus `toolUses`, not an ordered content-block stream (cc.d.ts:8964-8990). Distinct assistant rows retain their order; when prose and a tool coexist in one row, the API cannot say whether some prose came after the tool. Do not claim within-row `text → tool → text` fidelity or reconstruct an invented ordering. Compare Phase 1's `/tmp/hello-smoke/hello-probe.json` before writing the tests: preserve any observed row boundaries, harness-only user rows, and `AskUserQuestion` result/text shape in this fixture; if the probe differs from the expected shapes below, adapt the mapper and tests *in Task 5*, not after golden parity is committed. If the probe does not exist because Phase 1 smoke was skipped, complete that prerequisite before Task 5.
 
 **Step 1: Write the failing test**
 
 ```ts
 import { describe, expect, test } from "vitest";
 import { encodeQuizResult } from "../../../shared/quiz-contract.ts";
+import { formatEntry } from "../src/core/format.ts";
 import {
-  claudeAnswerEntries, pairPending, type ClaudeMessage, type ClaudeToolUse,
+  backfillFromClaude, claudeAnswerEntries, pairPending, type ClaudeMessage, type ClaudeToolUse,
 } from "../src/core/from-claude.ts";
 import { QUIZ_DETAILS, QUIZ_INPUT } from "./fixtures/session.ts";
 
@@ -1257,9 +1328,12 @@ describe("quiz answers", () => {
     expect(claudeAnswerEntries(quiz, { tool_use_id: "q", tool: quiz.name, input: QUIZ_INPUT, text: block })).toEqual(expected);
   });
 
-  test("are unavailable, with the result text, when no block is present", () => {
-    expect(claudeAnswerEntries(quiz, { tool_use_id: "q", tool: quiz.name, input: QUIZ_INPUT, result: "boom", isError: true }))
-      .toMatchObject([{ kind: "quiz-answer", details: { status: "unavailable", message: "boom" } }]);
+  test("validation errors and malformed nested details log an unavailable callout", () => {
+    for (const result of ["Invalid quiz input", `<quiz-result>${JSON.stringify({ ...QUIZ_DETAILS, answers: [null] })}</quiz-result>`]) {
+      const entry = claudeAnswerEntries(quiz, { tool_use_id: "q", tool: quiz.name, input: QUIZ_INPUT, result })[0]!;
+      expect(entry).toMatchObject({ kind: "quiz-answer", details: { status: "unavailable" } });
+      expect(formatEntry(entry)).toMatch(/^> \[!warning\] Quiz — unavailable/);
+    }
   });
 });
 
@@ -1274,9 +1348,12 @@ describe("pairPending", () => {
   ];
   const pending = (n: number) => ({ name: ASK, input: { questions: [q(n)] } });
 
-  test("matches by tool and input regardless of key order, newest first", () => {
+  test("matches by tool and canonical input without stealing a newer occurrence", () => {
     const reordered = { questions: [{ multiSelect: false, options: [], header: "H", question: "Q1?" }] };
-    expect(pairPending([{ name: ASK, input: reordered }], msgs(asked("old", 1), asked("new", 1)), new Set()))
+    const old = asked("old", 1, false);
+    const newer = asked("new", 1);
+    expect(pairPending([{ name: ASK, input: reordered }], msgs(old, newer), new Set())).toEqual([]);
+    expect(pairPending([{ name: ASK, input: reordered }], msgs(old, newer), new Set(["old"])))
       .toMatchObject([{ tool_use_id: "new" }]);
   });
 
@@ -1286,12 +1363,41 @@ describe("pairPending", () => {
     expect(pairPending([pending(1)], msgs(asked("a", 1)), new Set(["a"]))).toEqual([]);
   });
 
+  test("an in-flight identical first call blocks the later answer until its own outcome arrives", () => {
+    const earlier = asked("a", 1, false);
+    const later = asked("b", 1);
+    expect(pairPending([pending(1), pending(1)], msgs(earlier, later), new Set())).toEqual([]);
+    expect(pairPending([pending(1), pending(1)], msgs(later), new Set())).toEqual([]);
+    const answeredEarlier = asked("a", 1);
+    const paired = pairPending([pending(1), pending(1)], msgs(answeredEarlier, later), new Set());
+    expect(paired.map((record) => record.tool_use_id)).toEqual(["a", "b"]);
+    expect(paired.flatMap((record, i) => claudeAnswerEntries(pending(1), {
+      ...record, result: { answers: { "Q1?": i === 0 ? "first" : "second" } },
+    })).map((entry) => entry.kind === "ask-answer" && entry.outcome.status === "answered"
+      ? entry.outcome.items : [])).toEqual([
+      [{ kind: "other", text: "first" }], [{ kind: "other", text: "second" }],
+    ]);
+  });
+
   test("returns only the answered prefix so answers stay in order", () => {
     expect(pairPending([pending(1), pending(2)], msgs(asked("a", 1, false), asked("b", 2)), new Set())).toEqual([]);
     expect(pairPending([pending(1), pending(2)], msgs(asked("a", 1), asked("b", 2, false)), new Set()))
       .toMatchObject([{ tool_use_id: "a" }]);
   });
 });
+
+test("separate CC assistant rows keep prose before and after a question in order", () => {
+  const rows: ClaudeMessage[] = [
+    { role: "assistant", text: "Before.", toolUses: [] },
+    { role: "assistant", text: "", toolUses: [
+      { tool_use_id: "q", tool: "mcp__quiz__quiz", input: QUIZ_INPUT, result: encodeQuizResult(QUIZ_DETAILS) },
+    ] },
+    { role: "assistant", text: "After.", toolUses: [] },
+  ];
+  expect(backfillFromClaude(rows).entries.map((entry) => entry.kind))
+    .toEqual(["assistant", "question", "quiz-answer", "assistant"]);
+});
+
 ```
 
 **Step 2:** `npx vitest run plugins/md-log/test/from-claude.test.ts` → FAIL, exports missing.
@@ -1371,7 +1477,7 @@ function claudeAskOutcome(q: AskQuestion, record: Record<string, unknown>): AskO
 export function claudeAnswerEntries(use: PendingUse, summary: ClaudeToolUse | undefined): Entry[] {
   const message = summary?.text?.trim() || resultText(summary?.result).trim() || NO_RESULT;
   if (use.name === QUIZ) {
-    // The quiz appends its `<quiz-result>` block to every result, errors included (quiz contract).
+    // Successful quiz results include a block; validation errors may have only text. Keep the unavailable fallback.
     const details = summary
       ? decodeQuizResult(resultText(summary.result)) ?? decodeQuizResult(summary.text ?? "")
       : undefined;
@@ -1398,10 +1504,10 @@ function hasOutcome(use: ClaudeToolUse): boolean {
 }
 
 /**
- * Pairs pending uses (in the order the model made them) with their transcript records, anchored at the
- * newest: scanning back from the end, each pending use takes the latest earlier unconsumed record with the
- * same tool name and input. Returns the records for the longest prefix of pending uses that have an
- * outcome, so answers are always written in order; the caller keeps the rest pending.
+ * Match pending uses oldest-first to unconsumed transcript occurrences in chronological order.
+ * If a repeated call has not yet produced all its transcript occurrences, defer that ambiguous
+ * group: a lone visible later result must not be assigned to an earlier identical question.
+ * Only the answered prefix can be written.
  */
 export function pairPending(
   pending: readonly PendingUse[],
@@ -1409,24 +1515,36 @@ export function pairPending(
   consumed: ReadonlySet<string>,
 ): ClaudeToolUse[] {
   const uses = messages.filter((m) => m.role === "assistant").flatMap((m) => m.toolUses);
-  const matched: Array<ClaudeToolUse | undefined> = pending.map(() => undefined);
-  let cursor = uses.length;
-  for (let p = pending.length - 1; p >= 0; p--) {
-    const want = pending[p]!;
+  const counts = new Map<string, number>();
+  const identity = (name: string, input: unknown) => `${name}\u0000${canonical(input)}`;
+  for (const want of pending) {
+    const key = identity(want.name, want.input);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const available = new Map<string, number>();
+  for (const use of uses) {
+    if (consumed.has(use.tool_use_id)) continue;
+    const key = identity(use.tool, use.input);
+    available.set(key, (available.get(key) ?? 0) + 1);
+  }
+  const done: ClaudeToolUse[] = [];
+  let cursor = 0;
+  for (const want of pending) {
+    const group = identity(want.name, want.input);
+    if ((counts.get(group) ?? 0) > 1 && (available.get(group) ?? 0) < counts.get(group)!) break;
     const key = canonical(want.input);
-    for (let j = cursor - 1; j >= 0; j--) {
-      const use = uses[j]!;
-      if (use.tool === want.name && !consumed.has(use.tool_use_id) && canonical(use.input) === key) {
-        matched[p] = use;
-        cursor = j;
+    let match: ClaudeToolUse | undefined;
+    for (; cursor < uses.length; cursor++) {
+      const candidate = uses[cursor]!;
+      if (candidate.tool === want.name && !consumed.has(candidate.tool_use_id)
+        && canonical(candidate.input) === key) {
+        match = candidate;
+        cursor++;
         break;
       }
     }
-  }
-  const done: ClaudeToolUse[] = [];
-  for (const use of matched) {
-    if (!use || !hasOutcome(use)) break;
-    done.push(use);
+    if (!match || !hasOutcome(match)) break;
+    done.push(match);
   }
   return done;
 }
@@ -1479,7 +1597,7 @@ import { expect, test } from "vitest";
 import { formatLog } from "../src/core/format.ts";
 import { backfillFromClaude } from "../src/core/from-claude.ts";
 import { backfillFromOmp } from "../src/core/from-omp.ts";
-import { CLAUDE_MESSAGES, OMP_MESSAGES } from "./fixtures/session.ts";
+import { CLAUDE_MESSAGES, OMP_MESSAGES, QUIZ_INPUT } from "./fixtures/session.ts";
 
 test("the omp branch of the scripted session logs as golden/session.md", async () => {
   await expect(formatLog(backfillFromOmp(OMP_MESSAGES))).toMatchFileSnapshot("golden/session.md");
@@ -1487,6 +1605,17 @@ test("the omp branch of the scripted session logs as golden/session.md", async (
 
 test("the CC transcript of the same session logs byte-identically", async () => {
   await expect(formatLog(backfillFromClaude(CLAUDE_MESSAGES).entries)).toMatchFileSnapshot("golden/session.md");
+});
+
+test("changing only omp's option ordering breaks cross-harness parity", () => {
+  const ompOnly = OMP_MESSAGES.map((message) => message.role !== "assistant" || !Array.isArray(message.content)
+    ? message
+    : { ...message, content: message.content.map((block: unknown) => {
+      const b = block as { type?: string; name?: string };
+      return b.type === "toolCall" && b.name === "quiz"
+        ? { ...b, arguments: { ...QUIZ_INPUT, shuffle: false } } : block;
+    }) });
+  expect(formatLog(backfillFromOmp(ompOnly))).not.toBe(formatLog(backfillFromClaude(CLAUDE_MESSAGES).entries));
 });
 ```
 
@@ -1544,7 +1673,7 @@ Slow it is. Next lesson: factor trees.
 **Step 2: Run, expect a meaningful result**
 
 Run: `npx vitest run plugins/md-log/test/parity.test.ts`
-Expected: PASS. Tasks 2-5 already implement the behaviour, so this test locks in parity rather than driving new code. To prove it can fail, temporarily change `"Question — "` to `"Question: "` in entries.ts, see both tests FAIL with a snapshot mismatch, then revert. If the quiz lines differ from `33, 29, 21`, the contract implementation deviates from Task 1. Fix the contract, never the golden file.
+Expected: PASS. Tasks 2-5 already implement the behaviour; the asymmetric option-order test proves an omp-only divergence changes parity. If the quiz lines differ from `33, 29, 21`, the contract implementation deviates from Task 1. Fix the contract, never the golden file.
 
 **Step 3: Commit**
 
@@ -1562,7 +1691,7 @@ git commit -m "test(md-log): golden parity of omp and Claude Code backfill"
 - Create: `plugins/md-log/src/omp.ts`
 - Test: `plugins/md-log/test/omp.test.ts`
 
-Behaviour: `/md-log <file>` resolves against `ctx.cwd`. It refuses an empty argument, a busy agent (`ctx.isIdle()`, extensions/types.d.ts:290-291), a missing path and a non-file. It then backfills the active branch (`ctx.sessionManager.getBranch()`, session-manager.d.ts:410-414) by overwriting the note. An empty conversation leaves the note untouched, as the original does (md-log.ts:454-460). It persists the link with `pi.appendEntry("md-log", {file})` (types.d.ts:954-955) and restores it on `session_start` / `session_switch` from the newest such entry on the branch. Live events: `message_end` for user and assistant text (types.d.ts:536-544). `tool_call` writes the question for `quiz` (via the quiz contract) and for `ask`, before the tool runs. `tool_result` writes the answer. Every handler enqueues synchronously, so writes keep event order, and errors become `ctx.ui.notify(…, "error")` (types.d.ts:135; levels are `info|warning|error`, there is no `success`).
+Behaviour: `/md-log <file>` resolves against `ctx.cwd`. It refuses an empty argument, a busy agent (`ctx.isIdle()`, extensions/types.d.ts:290-291), a missing path and a non-file. It then backfills the active branch (`ctx.sessionManager.getBranch()`, session-manager.d.ts:410-414) by overwriting the note. An empty conversation leaves the note untouched, as the original does (md-log.ts:454-460). It persists the link with `pi.appendEntry("md-log", {file})` (types.d.ts:954-955) and restores it on `session_start` / `session_switch` from the newest such entry on the branch. Live events: `message_end` writes user prompts, and for an assistant message its prose and questions in content-block order — omp ends an assistant message before running its tools (the original wrote prose on `message_end` at md-log.ts:206 and the question on `tool_call` at 238, which yields the same order; types.d.ts:536-544). Tool calls a completed message already logged are recorded and skipped when `tool_call` fires, so no question is written twice; `tool_call` remains the fallback for a call no completed message has covered. `tool_result` writes the answer. Every handler enqueues synchronously, so writes keep event order, and errors become `ctx.ui.notify(…, "error")` (types.d.ts:135; levels are `info|warning|error`, there is no `success`).
 
 **Step 1: Extend the fake (additive) and write the failing test**
 
@@ -1603,6 +1732,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, test } from "vitest";
 import { createFakeOmp, type FakeOmp } from "../../../test-support/fake-omp.ts";
+import { backfillFromOmp } from "../src/core/from-omp.ts";
+import { formatLog } from "../src/core/format.ts";
 import mdLog from "../src/omp.ts";
 import {
   OMP_ASK_DETAILS, OMP_ASK_INPUT, OMP_MESSAGES, PROMPT, PROSE_1, PROSE_2, PROSE_3, QUIZ_DETAILS, QUIZ_INPUT,
@@ -1645,6 +1776,23 @@ describe("/md-log", () => {
     });
     await say({ role: "assistant", content: [{ type: "text", text: PROSE_3 }] });
     await expect(read()).toMatchFileSnapshot("golden/session.md");
+  });
+
+  test("live and backfill agree for text, quiz, text in one assistant message", async () => {
+    writeFileSync(note, "");
+    await run("md-log", note);
+    const mixed = { role: "assistant", content: [
+      { type: "text", text: "Before." },
+      { type: "toolCall", id: "mixed", name: "quiz", arguments: QUIZ_INPUT },
+      { type: "text", text: "After." },
+    ] };
+    await say(mixed);
+    await omp.emit("tool_call", { type: "tool_call", toolCallId: "mixed", toolName: "quiz", input: QUIZ_INPUT });
+    const live = read();
+    expect(live).toBe(formatLog(backfillFromOmp([mixed])));
+    expect(live).toContain("> [!question] Quiz");
+    expect(live.indexOf("Before.")).toBeLessThan(live.indexOf("> [!question] Quiz"));
+    expect(live.indexOf("> [!question] Quiz")).toBeLessThan(live.indexOf("After."));
   });
 
   test("backfills the conversation so far by overwriting the note", async () => {
@@ -1750,7 +1898,7 @@ import { basename, isAbsolute, resolve } from "node:path";
 import type { Entry } from "./core/entries.ts";
 import { appendBlocks, formatEntry, formatLog } from "./core/format.ts";
 import {
-  backfillFromOmp, contentText, ompTextEntry, ompToolCallEntries, ompToolResultEntries, type OmpMessage,
+  backfillFromOmp, contentText, ompAssistantEntries, ompTextEntry, ompToolCallEntries, ompToolResultEntries, type OmpMessage,
 } from "./core/from-omp.ts";
 import { createSerialQueue } from "./core/queue.ts";
 
@@ -1763,9 +1911,11 @@ function errorText(error: unknown): string {
 export default function mdLog(pi: ExtensionAPI): void {
   let link: string | null = null;
   const writes = createSerialQueue();
+  const loggedCalls = new Set<string>();
 
   /** Point `link` at the newest md-log entry on the active branch (null when none or after /md-unlog). */
   function restore(ctx: ExtensionContext): void {
+    loggedCalls.clear();
     link = null;
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type !== "custom" || entry.customType !== ENTRY_TYPE) continue;
@@ -1803,11 +1953,23 @@ export default function mdLog(pi: ExtensionAPI): void {
   pi.on("session_switch", (_event, ctx) => restore(ctx));
 
   pi.on("message_end", (event, ctx) => observe(ctx, () => {
-    const entry = ompTextEntry(event.message as OmpMessage);
-    return entry ? [entry] : [];
+    const message = event.message as OmpMessage;
+    if (message.role !== "assistant") {
+      const entry = ompTextEntry(message);
+      return entry ? [entry] : [];
+    }
+    for (const block of Array.isArray(message.content) ? message.content : []) {
+      const call = block as { type?: string; id?: string; name?: string; arguments?: unknown };
+      if (call.type === "toolCall" && call.id && ompToolCallEntries(call.name ?? "", call.arguments).length)
+        loggedCalls.add(call.id);
+    }
+    return ompAssistantEntries(message);
   }));
 
-  pi.on("tool_call", (event, ctx) => observe(ctx, () => ompToolCallEntries(event.toolName, event.input)));
+  pi.on("tool_call", (event, ctx) => observe(ctx, () => {
+    if (loggedCalls.delete(event.toolCallId)) return [];
+    return ompToolCallEntries(event.toolName, event.input);
+  }));
 
   pi.on("tool_result", (event, ctx) => observe(ctx, () => ompToolResultEntries(event.toolName, event.input, {
     details: event.details,
@@ -1849,6 +2011,7 @@ export default function mdLog(pi: ExtensionAPI): void {
         ctx.ui.notify(`md-log: ${errorText(error)}`, "error");
         return;
       }
+      loggedCalls.clear();
       link = file;
       pi.appendEntry(ENTRY_TYPE, { file });
       ctx.ui.setStatus(ENTRY_TYPE, `🗒 ${basename(file)}`);
@@ -1875,7 +2038,7 @@ export default function mdLog(pi: ExtensionAPI): void {
 
 **Step 4: Run, expect pass**
 
-`npx vitest run plugins/md-log/test/omp.test.ts` → 9 passed. The first test proves that the live path writes `golden/session.md`. Then `npm test` and `npm run typecheck` → exit 0.
+`npx vitest run plugins/md-log/test/omp.test.ts` → 10 passed. The first test proves that the live path writes `golden/session.md`; the mixed-content test proves live/backfill order. Then `npm test` and `npm run typecheck` → exit 0.
 
 **Step 5: Build and commit**
 
@@ -1900,7 +2063,7 @@ Rules the code follows (design "Adapter contract"):
 - Observers wrap their work in try/catch → `$.ui.toast`.
 - Writes go read → concat → write under one queue. A note that would pass 4 MiB is unlinked with a 10 s toast.
 - `turn.step`: settle pending answers from `$.session.messages()` at the step's start, `const result = yield* next(e)`, then log `result.answer` and the questions of `AskUserQuestion` / `mcp__quiz__quiz` uses and keep those uses pending. Steps carrying `agentId` pass straight through.
-- `turn.complete` (main loop only) settles what remains. A use with no result is logged as unavailable.
+- `turn.complete` (main loop only) settles what remains. A use with no result is logged as unavailable, and QA records still without an outcome are retired (marked consumed) so they never block a later identical question.
 - `prompt.submit` logs `result.text` after `await next(e)`, skipping `{drop}`.
 
 **Step 1: Write the failing kit tests**
@@ -1918,6 +2081,7 @@ export interface StubbedEngine {
   messages: SessionMessage[];
   toasts: string[];
   response: { answer: string; toolUses: TurnStepToolUse[] };
+  readGate?: { entered: () => void; release: Promise<void> };
 }
 
 /**
@@ -1935,8 +2099,10 @@ export function stubEngine(on: On): StubbedEngine {
     if (text === undefined) return { deny: `ENOENT: no such file, stat '${e.path}'` };
     return { value: { kind: "file", size: new TextEncoder().encode(text).length, mtimeMs: 0, isLink: false, realPath: e.path } };
   });
-  on("fs.read", ($, e) => {
+  on("fs.read", async ($, e) => {
     const text = engine.files.get(e.path);
+    engine.readGate?.entered();
+    if (engine.readGate) await engine.readGate.release;
     return text === undefined ? { deny: `ENOENT: no such file, open '${e.path}'` } : { value: text };
   });
   on("fs.write", ($, e) => {
@@ -2094,6 +2260,36 @@ test("at the end of a turn a pending quiz answer is logged from its <quiz-result
   );
 });
 
+test("a dead unanswered occurrence from an earlier turn never blocks a later identical question", async ($, on) => {
+  const engine = stubEngine(on);
+  engine.files.set(NOTE, "");
+  await $.command.run({ command: "md-log", args: NOTE, ...PRESENTATION });
+  engine.response = { answer: "", toolUses: [{ name: "AskUserQuestion", input: ASK_INPUT }] };
+  await drain($.turn.step(step(0)));   // asked, then the turn is aborted: the record keeps no outcome
+  engine.messages = [{
+    role: "assistant", text: "",
+    toolUses: [{ tool_use_id: "dead", tool: "AskUserQuestion", input: ASK_INPUT }],
+  }];
+  await $.turn.complete(complete);     // logged unavailable; the dead record is retired
+  engine.response = { answer: "", toolUses: [{ name: "AskUserQuestion", input: ASK_INPUT }] };
+  await drain($.turn.step(step(1)));   // the same question again
+  engine.messages = [
+    ...engine.messages,
+    {
+      role: "assistant", text: "",
+      toolUses: [{
+        tool_use_id: "live", tool: "AskUserQuestion", input: ASK_INPUT,
+        result: { questions: ASK_INPUT.questions, answers: { "How fast should we go?": "Slow" } }, text: "answered",
+      }],
+    },
+  ];
+  await $.turn.complete(complete);
+  expect(engine.files.get(NOTE)).toBe(
+    `${ASK_QUESTION_BLOCK}\n\n> [!warning] Question — unavailable\n> No answer was recorded.\n\n`
+      + `${ASK_QUESTION_BLOCK}\n\n> [!example] Answer\n> 1. Slow\n`,
+  );
+});
+
 test("subagent requests are not logged", async ($, on) => {
   const engine = stubEngine(on);
   engine.files.set(NOTE, "");
@@ -2130,6 +2326,29 @@ test("/md-unlog and the end of the session stop logging", async ($, on) => {
   expect(engine.files.get(NOTE)).toBe("");
 });
 
+test("an in-flight append cannot write after unlink, session end, or same-path relink", async ($, on) => {
+  const engine = stubEngine(on);
+  on("prompt.submit", ($, e) => ({ text: e.text }));
+  for (const action of ["md-unlog", "session.end", "unlink and relink"] as const) {
+    engine.files.set(NOTE, "");
+    await $.command.run({ command: "md-log", args: NOTE, ...PRESENTATION });
+    let entered!: () => void;
+    let release!: () => void;
+    const readStarted = new Promise<void>((resolve) => { entered = resolve; });
+    const readReleased = new Promise<void>((resolve) => { release = resolve; });
+    engine.readGate = { entered, release: readReleased };
+    const append = $.prompt.submit(prompt("Must not be logged"));
+    await readStarted;
+    engine.readGate = undefined;
+    if (action === "session.end") await $.session.end({ reason: "clear", sessionId: "s1", resume: { id: "s1" } });
+    else await $.command.run({ command: "md-unlog", args: "", ...PRESENTATION });
+    if (action === "unlink and relink") await $.command.run({ command: "md-log", args: NOTE, ...PRESENTATION });
+    release();
+    await append;
+    expect(engine.files.get(NOTE)).toBe("");
+  }
+});
+
 test("a failed write is reported with a toast and the prompt still goes through", async ($, on) => {
   const engine = stubEngine(on);
   on("prompt.submit", ($, e) => ({ text: e.text }));
@@ -2162,6 +2381,7 @@ import { createSerialQueue } from "./core/queue.ts";
 const NOTE_LIMIT = 4 * 1024 * 1024;
 
 let link: string | undefined;
+let linkGeneration = 0;
 /** Quiz/AskUserQuestion uses whose question is logged and whose answer is not, oldest first. */
 let pending: PendingUse[] = [];
 /** `tool_use_id`s whose answers are logged, so a repeated question never takes an old answer. */
@@ -2169,6 +2389,7 @@ const consumed = new Set<string>();
 const writes = createSerialQueue();
 
 function clearLink(): void {
+  linkGeneration++;
   link = undefined;
   pending = [];
   consumed.clear();
@@ -2187,26 +2408,29 @@ function overLimit(text: string): boolean {
 }
 
 /** Read, concatenate, write: `$.fs.write` has no append. Past 4 MiB the note is unlinked instead. */
-async function appendToNote($: EngineInterface, file: string, blocks: readonly string[]): Promise<void> {
-  if (link !== file) return; // unlinked or relinked since these blocks were queued
+async function appendToNote($: EngineInterface, file: string, generation: number, blocks: readonly string[]): Promise<void> {
+  if (link !== file || linkGeneration !== generation) return;
   const info = await $.fs.stat(file).catch(() => undefined);
   const current = info === undefined ? "" : info.size > NOTE_LIMIT ? undefined : await $.fs.read(file);
+  if (link !== file || linkGeneration !== generation) return;
   const next = current === undefined ? undefined : appendBlocks(current, blocks);
   if (next === undefined || overLimit(next)) {
     clearLink();
     $.ui.toast(`md-log: unlinked ${fileName(file)}: notes over 4 MiB cannot be written`, { timeoutMs: 10_000 });
     return;
   }
+  // No await between the generation check and write initiation.
   await $.fs.write(file, next);
 }
 
 /** Append what `compute` derives from an event. Never throws: failures become a toast. */
 async function observe($: EngineInterface, compute: () => readonly Entry[]): Promise<void> {
   const file = link;
+  const generation = linkGeneration;
   if (!file) return;
   try {
     const blocks = compute().map(formatEntry);
-    if (blocks.length > 0) await writes.run(() => appendToNote($, file, blocks));
+    if (blocks.length > 0) await writes.run(() => appendToNote($, file, generation, blocks));
   } catch (error) {
     $.ui.toast(`md-log: ${errorText(error)}`);
   }
@@ -2214,7 +2438,7 @@ async function observe($: EngineInterface, compute: () => readonly Entry[]): Pro
 
 /**
  * Log the answers of pending uses that the transcript now holds, in order. At the end of a turn
- * (`final`), uses that never got a result are logged as unavailable.
+ * (`final`), uses that never got a result are logged as unavailable and dead QA records are retired.
  */
 async function settle($: EngineInterface, final: boolean): Promise<void> {
   const owed = pending;
@@ -2224,6 +2448,18 @@ async function settle($: EngineInterface, final: boolean): Promise<void> {
     if (pending !== owed) return; // unlinked meanwhile
     const done = pairPending(owed, messages, consumed);
     for (const use of done) consumed.add(use.tool_use_id);
+    // The turn is over: a QA record still without an outcome never gets one. Retire it now so a
+    // dead occurrence from an aborted turn cannot capture a later identical question's answer.
+    if (final) {
+      for (const message of messages) {
+        if (message.role !== "assistant") continue;
+        for (const use of message.toolUses) {
+          if (isQaTool(use.tool) && !consumed.has(use.tool_use_id)
+            && use.result === undefined && use.text === undefined && use.isError !== true)
+            consumed.add(use.tool_use_id);
+        }
+      }
+    }
     const rest = owed.slice(done.length);
     pending = final ? [] : rest;
     const answered = done.flatMap((summary, i) => claudeAnswerEntries(owed[i]!, summary));
@@ -2323,7 +2559,7 @@ export function register(on: On, _options: PluginOptions): void {
 ```bash
 npm run typecheck                    # exit 0 against the vendored 2.1.296 types
 npm run build
-npm run test:claude -- md-log        # 9 pass, 0 fail
+npm run test:claude -- md-log        # 11 pass, 0 fail
 npm run validate                     # passes --strict; hooks line lists session.start, session.end,
                                      # command.run{command=md-log}, command.run{command=md-unlog},
                                      # prompt.submit, turn.step, turn.complete; "gating hook with .catch" ×3
@@ -2402,22 +2638,24 @@ Expected blocks in both:
 - **[UNVERIFIED] omp `ask` events.** `ask` is a discoverable tool (`loadMode = "discoverable"`, tools/ask.d.ts:89), so it may run as an xd:// device. The wrapper still emits `tool_call`/`tool_result` named `ask` for nested dispatches (wrapper.ts:184-190, 208-219). If the omp note lacks the question or answer block, add a temporary `pi.on("tool_call", (e, ctx) => ctx.ui.notify(e.toolName))` to `src/omp.ts`, rebuild, repeat, and read the notified name. If the name is not `ask`, add the observed name to `shared/tool-map.ts`'s `ask.omp` and re-run Tasks 4 and 7's tests.
 - **[UNVERIFIED] the question title in omp.** If the omp model omits `header`, the title reads `Question`. That is an omp prompt-compliance difference, not a bug. Re-run with a prompt that insists on the header, or compare with the title line stripped.
 - **[UNVERIFIED] CC `prompt.submit` for slash commands.** If `notes.md` or `backfill.md` contains a `> [!quote] YOU` block whose text is `/md-log …` or `/md-unlog`, CC fires `prompt.submit` for commands. Fix: in `src/claude.ts`'s `prompt.submit` hook, skip texts matching `/^\/md-(un)?log(\s|$)/`. Add a kit test: firing `$.prompt.submit(prompt("/md-unlog"))` writes nothing.
-- **[UNVERIFIED] CC transcript noise in backfill.** If the `diff notes.md backfill.md` in CC shows extra YOU blocks (for example `<command-name>`, `<local-command-stdout>` or `<system-reminder>` text), `$.session.messages()` exposes harness rows as user text. Fix: in `backfillFromClaude`, skip user messages whose trimmed text starts with `<command-name>`, `<command-message>`, `<local-command-stdout>`, `<local-command-caveat>` or `<system-reminder>`. Add a `from-claude.test.ts` case per observed prefix.
-- **[UNVERIFIED] CC split assistant blocks.** If the CC backfill shows one AGENT block split in two where the live log has one, CC stores a response's text blocks as separate messages. Fix: in `backfillFromClaude`, merge consecutive assistant messages that have no tool uses between them before mapping. Add a test.
-- **[UNVERIFIED] CC `ToolUseSummary.result` for `AskUserQuestion`** (open question 4, captured by Phase 1's `hello` spike). If Phase 1 recorded that `result` does not hold `{answers}` (for example only `text` carries the answer), change `claudeAnswerEntries` so that a non-error use without `answers` logs `{status: "answered", items: [{kind: "other", text: summary.text}]}` for each question instead of unavailable. Add a `from-claude.test.ts` case built from the recorded shape, and note the shape in this file.
+- **[UNVERIFIED] CC transcript differs from Phase 1 probe.** Task 5 already reads the Phase 1 capture and tests its recorded result/text fields, assistant row boundaries, and observed harness-only rows. If this real session produces a *new* shape, save the exact `$.session.messages()` rows before changing the mapper; add a fixture and regression for the observed difference, then rerun Tasks 5, 6 and 8. Do not blindly strip all `<system-reminder>` prefixes: some may be part of a genuine user prompt. Merge split assistant rows only when their Q&A ordering demonstrably matches the live step.
 - **[UNVERIFIED] Quiz parity (owned by Phase 3).** Once the quiz plugin exists, Phase 3 re-runs this smoke with a quiz question in both harnesses and diffs the `Quiz` blocks.
 
 ---
 
 ## Requested contract changes (master plan)
 
-1. **Quiz contract: one additive export and two precisions.** Replace the quiz contract block's last two lines and add one line, so it reads:
+1. **Quiz contract: one additive export and precise validation.** Replace the final three declarations of the quiz contract with exactly:
 
 ```ts
-/** Structural check of a quiz result (status, question, mode, answers[], correctIndices[]). md-log uses it on omp `details`. */
+/** `<quiz-result>${JSON.stringify(d) with "<" written as \u003c}</quiz-result>`, so a payload cannot close the block early. */
+export function encodeQuizResult(d: QuizResultDetails): string;
+/** First block; undefined when absent, unterminated, malformed, or not isQuizResultDetails. */
+export function decodeQuizResult(text: string): QuizResultDetails | undefined;
+/** Validate formatter fields: status/question/mode; answers with positive 1-based integer index,
+ * string label/value; positive integer correctIndices; optional displayed options with positive index/string
+ * label; optional context/note/explanation/message strings and correct/dontKnow booleans. */
 export function isQuizResultDetails(value: unknown): value is QuizResultDetails;
-export function encodeQuizResult(d: QuizResultDetails): string;             // `<quiz-result>${JSON.stringify(d) with "<" written as \u003c}</quiz-result>`
-export function decodeQuizResult(text: string): QuizResultDetails | undefined; // first block; undefined when absent, unterminated, malformed, or not isQuizResultDetails
 ```
 
 and in the `displayOrder` doc comment: `FNV-1a-32 over the UTF-8 bytes of question + "\u0000" + values.join("\u0000")`.
