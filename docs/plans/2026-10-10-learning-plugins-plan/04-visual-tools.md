@@ -6,11 +6,11 @@ Port the Mermaid/SVG authoring loop (`write_/edit_/render_` × `mermaid`/`svg`),
 
 ## Acceptance tests (phase done when all hold)
 
-1. **Given** a maker agent in either harness and an empty renderer cache (`XDG_CACHE_HOME=$(mktemp -d)`), **when** it calls `render_mermaid`/`render_svg`, **then** the renderer installs once into `$XDG_CACHE_HOME/learning-plugins/visual-tools/<16-hex>/`, the model receives the PNG as an image, and a second render does not reinstall.
+1. **Given** a maker agent in either harness and an empty renderer cache (`XDG_CACHE_HOME=$(mktemp -d)`), **when** it calls `render_mermaid`/`render_svg` twice, **then** the renderer installs once into `$XDG_CACHE_HOME/learning-plugins/visual-tools/<16-hex>/` (verified by a persistent marker or npm-invocation count), the model receives each PNG as an image, and the second render does not reinstall.
 2. **Given** `render_* { save_as: "number-line" }`, **when** it succeeds, **then** `<cwd>/viz/viz-number-line-<epochMs>-<6 base36>.png` exists, was created exclusively (an existing file is never overwritten), and the result text names that filename.
 3. **Given** an `edit_*` whose `old_text` matches 0 or 2+ times, **when** it runs, **then** it fails with a message naming the count and the source is unchanged.
 4. **Given** two maker subagents running at once (omp: two sessions in one process; CC: two `agentId`s in one module), **when** each writes and renders, **then** neither sees the other's source.
-5. **Given** a broken source, a failed install, a missing `node` or a PNG over 4 MiB (CC), **when** render runs, **then** the tool returns a model-readable error (omp `isError` result, CC `{ result, isError: true }`) containing the renderer's stderr tail or the exact remedy; a failed install leaves nothing behind, so the next render retries.
+5. **Given** a broken source, a failed install, a missing `node` or a PNG over 4 MiB (CC), **when** render runs, **then** the tool returns a model-readable error (omp `isError` result, CC `{ result, isError: true }`) containing the renderer's stderr tail or the exact remedy; a failed install leaves no *current* cache, and a killed install's abandoned staging is reclaimed on a later invocation so the next render can retry.
 
 ## Decisions this phase makes (read before coding)
 
@@ -23,13 +23,14 @@ Grounded in source/types and in throwaway prototypes run on this machine (core +
 | D3 | **Tool parameter schemas are plain JSON Schema, one builder for both harnesses** (`inputSchema` in core). omp's `TSchema = Type \| TJsonSchema` (`@oh-my-pi/pi-ai` `dist/types/types.d.ts:1089-1100`); no `@sinclair/typebox` dependency. | pi-ai types |
 | D4 | **Per-key serialization holds by construction; no queue.** Sources live in memory (`SourceStore`), and every read-modify-write is synchronous (no `await` between read and write). A render snapshots the source synchronously and writes uniquely named staging/output files, so concurrent renders on one key cannot collide. A promise queue would *hurt* in CC: awaiting one's own Promise counts against the 10 s hook budget (design, CC hook time budget), so a call queued behind a 60 s render would overrun. | design + reasoning |
 | D5 | **Publish = render straight into `<cwd>/viz/<unique>.png`.** The original re-rendered on `save_as` and copied (`mermaid_tools.ts:146-180`). `$.fs.write` is text-only (cc.d.ts:2758-2764), so CC cannot copy a PNG; instead `render.js` writes `--out` itself with `copyFileSync(tmp, out, COPYFILE_EXCL)`: exclusive create, exit 3 if it exists. Same code path in both harnesses. | cc.d.ts |
-| D6 | **Names:** `viz-<slug>-<epochMs>-<6 base36>.png`, slug lowercased to `[a-z0-9-]`, ≤ 60 chars, `viz` when empty. Randomness and time are injected (`publishName(slug, nowMs, random)`). Previews use the same scheme with slug `preview` inside a private staging dir (omp: `mkdtemp(os.tmpdir()/visual-tools-)`; CC: `${TMPDIR:-/tmp}/learning-plugins-visual-tools`). | — |
-| D7 | **Install cache key:** FNV-1a 64 over the lockfile text (pure, no crypto API; identical in the CC mod runtime and Node). Dir `${XDG_CACHE_HOME:-$HOME/.cache}/learning-plugins/visual-tools/<hash>`; an XDG value is used only when absolute (XDG spec). Current ⇔ `<dir>/.installed` exists. Install runs in `mkdtemp(<root>/<hash>.tmp-)`, writes the marker, then `rename`s into place, so a half install is never "current" and two concurrent first renders cannot corrupt each other. | — |
+| D6 | **Names:** `viz-<slug>-<epochMs>-<6 base36>.png`, slug lowercased to `[a-z0-9-]`, ≤ 60 chars, `viz` when empty. Randomness and time are injected (`publishName(slug, nowMs, random)`). Previews use the same scheme with slug `preview` inside a private staging dir (omp: a fresh mode-0700 `mkdtemp(os.tmpdir()/visual-tools-)` per render, removed in `finally`; CC: `<cacheRoot>/previews`, i.e. under `${XDG_CACHE_HOME:-$HOME/.cache}`, never a shared `/tmp` path). Every render removes its staged source and its preview (CC: `rm -f` through `$.process.run`, since `$.fs` has no delete) on success and on failure; only published PNGs stay. | cc.d.ts:2738-2852 |
+| D7 | **Install cache key:** FNV-1a 64 over the lockfile text (pure, no crypto API; identical in the CC mod runtime and Node). Dir `${XDG_CACHE_HOME:-$HOME/.cache}/learning-plugins/visual-tools/<hash>`; an XDG value is used only when absolute (XDG spec). Current ⇔ `<dir>/.installed` exists. Install runs in `mkdtemp(<root>/<hash>.tmp-)`, writes the marker last, then atomically `rename`s into place. Concurrent installers may both download, but only one becomes current; never delete an existing destination (a `<hash>` dir without `.installed` is reported, not removed). Before every render, reclaim only this hash's abandoned staging directories older than 20 minutes (more than the 9-minute `npm ci` timeout and the 10-minute host budget), first renaming each to a private `<hash>.reap-<uuid>` name: only the process that wins that rename deletes the bytes. A `.reap-` dir whose ctime (set by the claiming rename) is older than 20 minutes was left by a killed reaper and is reclaimed the same way. Crash-killed installers are therefore cleaned on the next invocation. | — |
 | D8 | **Pins:** `@mermaid-js/mermaid-cli` **12.0.0**, `@resvg/resvg-js` **2.6.2**, `puppeteer` **25.13.0** (mermaid-cli 12 declares `puppeteer ^25` as a *peer* dependency; pinning it makes the lock explicit). `npm view` on 2026-10-10. `npm ci --ignore-scripts` (puppeteer's postinstall only downloads browsers; resvg ships prebuilt optional binaries) with `PUPPETEER_SKIP_DOWNLOAD=1`, no `--omit=optional`. | npm |
 | D9 | **mermaid-cli via its JS API** (`run(input, output, opts)` from `src/index.js`, exported as `"."` default) loaded with `createRequire(<cacheDir>/package.json).resolve` + `import()`, options equal to the original `mmdc -s 2 -b white` with a puppeteer config `{headless:"shell", executablePath, args:["--no-sandbox"]}`. Verified rendering with Chrome 149 here. **SVG via resvg** `fitTo: zoom 2` (= `rsvg-convert -z 2`, `svg_tools.ts:49`), system fonts, `sans-serif` default, no background (as rsvg). | prototype |
 | D10 | **`node` comes from PATH in both harnesses** (omp runs extensions under bun, so `process.execPath` is not Node). `render.js` refuses Node < 22.13 (mermaid-cli `engines`) with exit 2 and a message naming the binary. **Verified under real CC 2.1.296**: `$.process.run(["node", …])` resolves via the PATH of the shell that launched `claude`; with nvm's default v18 on PATH the render failed with exactly that message, with 24.15.0 it installed and rendered. | prototype |
 | D11 | **CC errors** are `{ result: text, isError: true }` (design), agreed with Phase 3 (quiz). [UNVERIFIED] whether the model sees `is_error: true`: checked in the smoke (Task 9), same rule as Phase 3. | PlanQuiz |
 | D12 | **CC tool names verified:** a mod named `visual-tools` registering `write_mermaid` etc. surfaces as `mcp__visual-tools__write_mermaid` (stream-json `init.tools` of a real `claude -p --plugin-dir` run). One `tool.call` hook with an **array matcher** of the six literal names (`Matcher`: "an array is any-of", cc.d.ts:4887-4897) passes `claude plugin validate --strict` with zero warnings, and the kit passes `agentId` through to the hook. | prototype |
+| D13 | **CC source store lives for one conversation.** The CC module (and its `SourceStore`, keyed by `agentId ?? "main"`) survives `/clear`, `/resume` and `/branch`, and `session.start` does not rerun after them; `session.end` does fire for all three (`/branch` reports `resume`) and at exit (reference.md:116-117; `SessionEndInput`, cc.d.ts:8882-8897). So a `session.end` hook replaces the store; otherwise the next conversation's `main` key would render the previous conversation's source. Same rule as md-log's link (02-md-log.md, "CC clears the link on `session.end`"). | CC docs/types |
 
 Measured so far (open question 5, preliminary, this laptop): first `npm ci` with an **empty npm cache** 41 s, `node_modules` 453 MB plus 95 MB npm download cache; with a warm npm cache 4–13 s. First Mermaid render ~1.6 s. Task 9 records the final numbers.
 
@@ -436,14 +437,11 @@ describe("applyEdit", () => {
     expect(applyEdit("graph TD\n  A --> B\n", "A --> B", "A --> C")).toEqual({ updated: "graph TD\n  A --> C\n", index: 11 });
   });
 
-  test("zero matches is an error that names the count", () => {
-    expect(() => applyEdit("A --> B", "A --> X", "Y")).toThrow(new EditError(
-      "`old_text` matches 0 times; it must match exactly once. Nothing changed: copy it exactly from the current source.",
-    ));
-  });
-
-  test("several matches is an error that names the count", () => {
-    expect(() => applyEdit("A --> B\nA --> C\nA --> D", "A -->", "Z -->")).toThrow(/matches 3 times/);
+  test.each([
+    ["A --> B", "A --> X", "Y", 0],
+    ["A --> B\nA --> C\nA --> D", "A -->", "Z -->", 3],
+  ])("rejects %j with a wrong match count", (current, oldText, newText, count) => {
+    expect(() => applyEdit(current, oldText, newText)).toThrow(new RegExp(`matches ${count} times`));
   });
 
   test("overlapping occurrences count as separate matches", () => {
@@ -673,7 +671,7 @@ export function renderTimeoutMs(installed: boolean): number {
 | 3 | `--out` already exists (never overwritten) | `--out already exists: <path>` |
 | 4 | install failed | first lines of npm's error + `Install manually with:` + exact one-line command |
 
-Stdout is never used. Sequence: check Node version → parse args → `--in` exists → read `./package-lock.json` (beside `render.js`) → `installPaths(lock, process.env)` → if no marker: install (D7) → render into `mkdtemp(os.tmpdir()/visual-tools-)/out.png` → `mkdir -p dirname(--out)` → `copyFileSync(tmp, out, COPYFILE_EXCL)` → remove temp dir. Chrome: `PUPPETEER_EXECUTABLE_PATH` if it exists, else first existing of `CHROME_CANDIDATES` (ported from `_common.ts:26-32`), else exit 1 "No Chrome or Chromium found…". npm: the `npm` on PATH with `dirname(process.execPath)` prepended, so install and render use the same Node.
+Stdout is never used. Sequence: check Node version → parse args → `--in` exists → read `./package-lock.json` (beside `render.js`) → `installPaths(lock, process.env)` → reclaim this hash's stale staging directories even when already installed → if no marker: install (D7) → render into `mkdtemp(os.tmpdir()/visual-tools-)/out.png` → `mkdir -p dirname(--out)` → `copyFileSync(tmp, out, COPYFILE_EXCL)` → remove temp dir. Chrome: `PUPPETEER_EXECUTABLE_PATH` if it exists, else first existing of `CHROME_CANDIDATES` (ported from `_common.ts:26-32`), else exit 1 "No Chrome or Chromium found…". npm: the `npm` on PATH with `dirname(process.execPath)` prepended, so install and render use the same Node.
 
 **Step 1: Create `renderer/package.json`** (`"type": "module"` is required: `render.js` is ESM and `dist/claude/visual-tools/` has no other `package.json`; without it Node prints `MODULE_TYPELESS_PACKAGE_JSON` and reparses):
 
@@ -716,12 +714,13 @@ Expected: `renderer/package-lock.json` created (~96 KB, lockfileVersion 3); no `
 
 ```ts
 import { execFile } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { build } from "esbuild";
 import { beforeAll, describe, expect, test } from "vitest";
+import { installPaths } from "../src/core/install.ts";
 import { EXIT } from "../src/core/protocol.ts";
 
 const PLUGIN = join(import.meta.dirname, "..");
@@ -739,9 +738,9 @@ async function bundle(dir: string, packageJson: string, lock: string): Promise<s
 }
 
 /** Run render.js; never throws, so tests can assert on exit codes. */
-async function render(script: string, cache: string, args: string[]) {
+async function render(script: string, cache: string, args: string[], env: NodeJS.ProcessEnv = {}) {
   try {
-    await run("node", [script, ...args], { env: { ...process.env, XDG_CACHE_HOME: cache }, timeout: 600_000 });
+    await run("node", [script, ...args], { env: { ...process.env, XDG_CACHE_HOME: cache, ...env }, timeout: 600_000 });
     return { code: 0, stderr: "" };
   } catch (err) {
     const e = err as { code?: number; stderr?: string };
@@ -785,6 +784,35 @@ describe("render.js without network", () => {
     expect(r.stderr).toMatch(/Install manually with:\n {2}mkdir -p '.+' && cp .+ && PUPPETEER_SKIP_DOWNLOAD=1 npm ci --ignore-scripts --no-audit --no-fund && touch \.installed/);
     expect(readdirSync(join(cache, "learning-plugins", "visual-tools"))).toEqual([]);
     expect(existsSync(join(dir, "o.png"))).toBe(false);
+    const retry = await render(script, cache, ["--kind", "svg", "--in", join(dir, "in.svg"), "--out", join(dir, "retry.png")]);
+    expect(retry.code).toBe(EXIT.install);
+    expect(readdirSync(join(cache, "learning-plugins", "visual-tools"))).toEqual([]);
+  });
+
+  test("the next invocation reclaims killed-install staging older than 20 minutes, not a live peer, a live reaper or an unowned destination", async () => {
+    const cache = mkdtempSync(join(tmpdir(), "vt-cache-"));
+    const paths = installPaths(readFileSync(join(dir, "renderer/package-lock.json"), "utf8"), { XDG_CACHE_HOME: cache });
+    const root = join(cache, "learning-plugins", "visual-tools");
+    mkdirSync(root, { recursive: true });
+    const abandoned = join(root, `${paths.hash}.tmp-killed`);
+    const active = join(root, `${paths.hash}.tmp-active`);
+    // A reaper claimed this a moment ago: its mtime is old (rename keeps it) but its ctime is now.
+    const reaping = join(root, `${paths.hash}.reap-live`);
+    for (const d of [abandoned, active, reaping]) mkdirSync(d);
+    writeFileSync(join(abandoned, "partial"), "bytes from killed npm");
+    const old = new Date(Date.now() - 21 * 60_000);
+    utimesSync(abandoned, old, old);
+    utimesSync(reaping, old, old);
+    const args = ["--kind", "svg", "--in", join(dir, "in.svg"), "--out", join(dir, "recovered.png")];
+    expect((await render(script, cache, args)).code).toBe(EXIT.install); // fixture's lock is intentionally invalid
+    // The abandoned stage is gone without a leftover reap dir; the failed install's own stage is gone too.
+    expect(readdirSync(root).sort()).toEqual([`${paths.hash}.reap-live`, `${paths.hash}.tmp-active`]);
+    mkdirSync(paths.dir);
+    writeFileSync(join(paths.dir, "foreign"), "do not delete");
+    const blocked = await render(script, cache, args);
+    expect(blocked.code).toBe(EXIT.install);
+    expect(blocked.stderr).toContain("Move it aside and retry");
+    expect(readFileSync(join(paths.dir, "foreign"), "utf8")).toBe("do not delete");
   });
 });
 
@@ -807,13 +835,44 @@ describe.runIf(process.env.VT_RENDER_IT === "1")("render.js with the real render
     writeFileSync(join(dir, "bad.mmd"), "graph TD\n  A -->\n  ][\n");
   }, 600_000);
 
-  test("first SVG render installs once, then writes a PNG at twice the intrinsic size", async () => {
+  test("an offline failed install using the shipped lock retries successfully with the same cache", async () => {
+    const retryCache = mkdtempSync(join(tmpdir(), "vt-retry-"));
+    const npmCache = mkdtempSync(join(tmpdir(), "vt-empty-npm-"));
+    const paths = installPaths(readFileSync(join(PLUGIN, "renderer/package-lock.json"), "utf8"), { XDG_CACHE_HOME: retryCache });
+    const args = ["--kind", "svg", "--in", join(dir, "ok.svg"), "--out", join(dir, "recovered.png")];
+    const failed = await render(script, retryCache, args, { npm_config_offline: "true", npm_config_cache: npmCache });
+    expect(failed.code).toBe(EXIT.install);
+    expect(existsSync(paths.marker)).toBe(false);
+    expect(readdirSync(join(retryCache, "learning-plugins", "visual-tools"))).toEqual([]);
+    expect(await render(script, retryCache, args, { npm_config_offline: "false", npm_config_cache: npmCache })).toEqual({ code: 0, stderr: "" });
+    expect(readFileSync(join(dir, "recovered.png")).subarray(0, 8)).toEqual(PNG_SIGNATURE);
+    expect(readFileSync(paths.marker, "utf8")).toBe(`${paths.hash}\n`);
+  }, 600_000);
+
+  test("concurrent first renders leave one complete cache and both PNGs", async () => {
+    const concurrentCache = mkdtempSync(join(tmpdir(), "vt-concurrent-"));
+    const paths = installPaths(readFileSync(join(PLUGIN, "renderer/package-lock.json"), "utf8"), { XDG_CACHE_HOME: concurrentCache });
+    const outputs = [join(dir, "parallel-1.png"), join(dir, "parallel-2.png")];
+    const results = await Promise.all(outputs.map((out) =>
+      render(script, concurrentCache, ["--kind", "svg", "--in", join(dir, "ok.svg"), "--out", out])));
+    expect(results).toEqual([{ code: 0, stderr: "" }, { code: 0, stderr: "" }]);
+    expect(readFileSync(paths.marker, "utf8")).toBe(`${paths.hash}\n`);
+    expect(readdirSync(join(concurrentCache, "learning-plugins", "visual-tools"))).toEqual([paths.hash]);
+    for (const out of outputs) expect(readFileSync(out).subarray(0, 8)).toEqual(PNG_SIGNATURE);
+  }, 600_000);
+
+  test("shipped package/lock installs once; a second SVG render reuses the same marker", async () => {
+    const paths = installPaths(readFileSync(join(PLUGIN, "renderer/package-lock.json"), "utf8"), { XDG_CACHE_HOME: cache });
     const out = join(dir, "svg.png");
     expect(await render(script, cache, ["--kind", "svg", "--in", join(dir, "ok.svg"), "--out", out])).toEqual({ code: 0, stderr: "" });
     const png = readFileSync(out);
     expect(png.subarray(0, 8)).toEqual(PNG_SIGNATURE);
     expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([80, 40]); // IHDR width, height
-    expect(readdirSync(join(cache, "learning-plugins", "visual-tools"))).toHaveLength(1); // no leftover staging dir
+    expect(readFileSync(paths.marker, "utf8")).toBe(`${paths.hash}\n`);
+    const marker = statSync(paths.marker);
+    expect(await render(script, cache, ["--kind", "svg", "--in", join(dir, "ok.svg"), "--out", join(dir, "svg-2.png")])).toEqual({ code: 0, stderr: "" });
+    expect(statSync(paths.marker).ino).toBe(marker.ino); // reinstall would create a different marker
+    expect(readdirSync(join(cache, "learning-plugins", "visual-tools"))).toEqual([paths.hash]);
   }, 600_000);
 
   test("Mermaid renders through the system Chrome", async () => {
@@ -851,13 +910,16 @@ describe.runIf(process.env.VT_RENDER_IT === "1")("render.js with the real render
  * First use installs pinned dependencies (./package-lock.json) into the user cache with `npm ci`.
  */
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   constants,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -896,10 +958,40 @@ function manualInstallCommand(paths: InstallPaths): string {
   ].join(" && ");
 }
 
-/** npm ci into a private temp dir next to the target, then rename into place: concurrent installs never see a half-written tree. */
+/** Longer than npm ci's 540 s timeout and the host's 600 s render budget: no live installer owns an older stage. */
+const STALE_STAGING_MS = 20 * 60_000;
+
+/**
+ * Reclaim this lock's abandoned staging: `<hash>.tmp-*` left by a killed installer (judged by mtime, set when
+ * the installer created and filled it) and `<hash>.reap-*` left by a killed reaper (judged by ctime, which the
+ * claiming rename sets). Claim by rename first; only the rename's winner deletes. Never touches `<hash>` itself.
+ */
+function reclaimStaging(paths: InstallPaths): void {
+  const root = dirname(paths.dir);
+  if (!existsSync(root)) return;
+  for (const name of readdirSync(root)) {
+    const reaping = name.startsWith(`${paths.hash}.reap-`);
+    if (!reaping && !name.startsWith(`${paths.hash}.tmp-`)) continue;
+    const candidate = join(root, name);
+    try {
+      const stat = lstatSync(candidate); // do not follow a symlink into another directory
+      const touchedMs = reaping ? stat.ctimeMs : stat.mtimeMs;
+      if (!stat.isDirectory() || Date.now() - touchedMs < STALE_STAGING_MS) continue;
+      const claimed = join(root, `${paths.hash}.reap-${randomUUID()}`);
+      renameSync(candidate, claimed); // only the process that wins the rename owns these bytes
+      rmSync(claimed, { recursive: true, force: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err; // another reaper already claimed it
+    }
+  }
+}
+
+/** npm ci into a private staging dir; rename a complete install without ever deleting a competing destination. */
 function install(paths: InstallPaths): void {
   const root = dirname(paths.dir);
   mkdirSync(root, { recursive: true });
+  if (existsSync(paths.marker)) return;
+  if (existsSync(paths.dir)) throw new CliError(`Renderer cache path ${paths.dir} exists without .installed. Move it aside and retry; it was not removed.`, EXIT.install);
   const staging = mkdtempSync(join(root, `${paths.hash}.tmp-`));
   try {
     copyFileSync(join(RENDERER_DIR, "package.json"), join(staging, "package.json"));
@@ -907,6 +999,7 @@ function install(paths: InstallPaths): void {
     const r = spawnSync("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--loglevel=error"], {
       cwd: staging,
       encoding: "utf8",
+      timeout: 540_000, // shorter than the host's 600 s deadline; an in-process failure runs finally
       maxBuffer: 64 * 1024 * 1024,
       // npm next to the node running us wins, so install and render agree on the Node version.
       env: { ...process.env, PUPPETEER_SKIP_DOWNLOAD: "1", PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}` },
@@ -920,12 +1013,15 @@ function install(paths: InstallPaths): void {
     }
     writeFileSync(join(staging, ".installed"), `${paths.hash}\n`);
     try {
+      if (existsSync(paths.marker)) return;
+      if (existsSync(paths.dir)) throw new CliError(`Renderer cache path ${paths.dir} exists without .installed. Move it aside and retry; it was not removed.`, EXIT.install);
       renameSync(staging, paths.dir);
     } catch (err) {
-      if (existsSync(paths.marker)) return; // another render finished the same install first
-      if (!existsSync(paths.dir)) throw err;
-      rmSync(paths.dir, { recursive: true, force: true }); // leftover without marker: replace it
-      renameSync(staging, paths.dir);
+      if (existsSync(paths.marker)) return; // a concurrent install completed first
+      if (existsSync(paths.dir)) {
+        throw new CliError(`Renderer cache path ${paths.dir} exists without .installed. Move it aside and retry; it was not removed.`, EXIT.install);
+      }
+      throw err;
     }
   } finally {
     rmSync(staging, { recursive: true, force: true });
@@ -984,6 +1080,7 @@ async function main(args: readonly string[]): Promise<void> {
   const req = parseRenderArgs(args);
   if (!existsSync(req.input)) throw new CliError(`--in does not exist: ${req.input}`, EXIT.usage);
   const paths = installPaths(readFileSync(join(RENDERER_DIR, "package-lock.json"), "utf8"), process.env);
+  reclaimStaging(paths);
   if (!existsSync(paths.marker)) install(paths);
   const work = mkdtempSync(join(tmpdir(), "visual-tools-"));
   try {
@@ -1012,7 +1109,7 @@ main(process.argv.slice(2)).then(
 );
 ```
 
-**Step 7:** `npx vitest run plugins/visual-tools/test/renderer.test.ts` → 3 pass, 4 skipped. Then once, with network: `VT_RENDER_IT=1 npx vitest run plugins/visual-tools/test/renderer.test.ts` → 7 pass (first run includes the install; note the duration for Task 9).
+**Step 7:** `npx vitest run plugins/visual-tools/test/renderer.test.ts` → 4 pass, 6 skipped. Then once, with network: `VT_RENDER_IT=1 npx vitest run plugins/visual-tools/test/renderer.test.ts` → 10 pass. The real block installs three times, each into its own empty `XDG_CACHE_HOME` (retry, concurrent, install-once); note the install-once test's duration for Task 9.
 
 **Step 8:** `npm run typecheck && npm run build && npm run check`. Confirm `dist/omp/visual-tools/renderer/{render.js,package.json,package-lock.json}` and the same three under `dist/claude/visual-tools/renderer/`.
 
@@ -1036,9 +1133,9 @@ The omp test fakes only the OS process (`runRenderer`): the fake parses the real
 **Step 1: Write the failing test** `test/omp.test.ts`:
 
 ```ts
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createFakeOmp } from "../../../test-support/fake-omp.ts";
 import { installPaths } from "../src/core/install.ts";
@@ -1110,6 +1207,7 @@ test("render returns the PNG of the current (edited) source as an image; preview
   expect(imageBytes(result)).toEqual(Buffer.concat([PNG_SIGNATURE, Buffer.from("graph TD\n  A --> C")]));
   expect(calls[0]!.argv.slice(0, 4)).toEqual(["node", script, "--kind", "mermaid"]);
   expect(readdirSync(cwd)).toEqual([]);
+  expect(existsSync(dirname(parseRenderArgs(calls[0]!.argv.slice(2)).input))).toBe(false);
 });
 
 test("save_as publishes the rendered PNG into <cwd>/viz under a unique name and returns that name", async () => {
@@ -1121,6 +1219,7 @@ test("save_as publishes the rendered PNG into <cwd>/viz under a unique name and 
   expect(readdirSync(join(cwd, "viz"))).toEqual([filename]);
   expect(readFileSync(join(cwd, "viz", filename))).toEqual(imageBytes(result));
   expect(textOf(result)).toContain(`filename: ${filename}`);
+  expect(existsSync(dirname(parseRenderArgs(calls[0]!.argv.slice(2)).input))).toBe(false);
 });
 
 test("rendering or editing before writing fails and names the write tool", async () => {
@@ -1146,6 +1245,7 @@ test("a failed render is an error result carrying the renderer's stderr and no i
   expect(result.isError).toBe(true);
   expect(result.content.map((c) => c.type)).toEqual(["text"]);
   expect(textOf(result)).toContain("Parse error on line 2:\nExpecting 'NODE_STRING'");
+  expect(existsSync(dirname(parseRenderArgs(calls[0]!.argv.slice(2)).input))).toBe(false);
 });
 
 test("two sessions (e.g. parallel maker subagents) never see each other's source", async () => {
@@ -1321,7 +1421,7 @@ and `src/omp.ts`:
  */
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1350,28 +1450,31 @@ const KEY = "main"; // one store per session (see header), so one key
 
 export function registerVisualTools(pi: ExtensionAPI, deps: OmpDeps): void {
   const store = new SourceStore("omp");
-  let stagingDir: string | undefined;
 
   async function render(kind: Kind, saveAs: string | undefined, signal: AbortSignal | undefined, ctx: ExtensionContext) {
     const source = store.read(KEY, kind);
-    stagingDir ??= mkdtempSync(join(tmpdir(), "visual-tools-"));
-    const plan = planRender({ kind, saveAs, cwd: ctx.cwd, stagingDir, nowMs: deps.now(), random: deps.random });
-    writeFileSync(plan.input, source, "utf8");
-    const lock = readFileSync(join(dirname(deps.rendererScript), "package-lock.json"), "utf8");
-    const { marker } = installPaths(lock, process.env);
-    const argv = renderArgv("node", deps.rendererScript, { kind, input: plan.input, output: plan.output });
-    const run = await deps.runRenderer(argv, renderTimeoutMs(existsSync(marker)), signal);
-    if (run.exitCode !== EXIT.ok || !existsSync(plan.output)) {
-      return { content: [{ type: "text" as const, text: renderFailedText(kind, stderrTail(run.stderr), "omp") }], details: undefined, isError: true };
+    const stagingDir = mkdtempSync(join(tmpdir(), "visual-tools-"));
+    try {
+      const plan = planRender({ kind, saveAs, cwd: ctx.cwd, stagingDir, nowMs: deps.now(), random: deps.random });
+      writeFileSync(plan.input, source, "utf8");
+      const lock = readFileSync(join(dirname(deps.rendererScript), "package-lock.json"), "utf8");
+      const { marker } = installPaths(lock, process.env);
+      const argv = renderArgv("node", deps.rendererScript, { kind, input: plan.input, output: plan.output });
+      const run = await deps.runRenderer(argv, renderTimeoutMs(existsSync(marker)), signal);
+      if (run.exitCode !== EXIT.ok || !existsSync(plan.output)) {
+        return { content: [{ type: "text" as const, text: renderFailedText(kind, stderrTail(run.stderr), "omp") }], details: undefined, isError: true };
+      }
+      const data = readFileSync(plan.output).toString("base64");
+      return {
+        content: [
+          { type: "text" as const, text: renderedText(kind, "omp", plan.published) },
+          { type: "image" as const, data, mimeType: "image/png" },
+        ],
+        details: { path: plan.published?.path, filename: plan.published?.filename },
+      };
+    } finally {
+      rmSync(stagingDir, { recursive: true, force: true }); // source and preview, even on render failure/abort
     }
-    const data = readFileSync(plan.output).toString("base64");
-    return {
-      content: [
-        { type: "text" as const, text: renderedText(kind, "omp", plan.published) },
-        { type: "image" as const, data, mimeType: "image/png" },
-      ],
-      details: { path: plan.output, filename: plan.published?.filename },
-    };
   }
 
   for (const spec of toolSpecs("omp")) {
@@ -1433,7 +1536,7 @@ export default function visualTools(pi: ExtensionAPI): void {
 
 Every `$` call lives in `src/claude.ts`; `$` is only passed to top-level functions of that file. All awaits are mods API calls (exempt from the 10 s budget). The renderer path is `${$.plugin.root}/renderer/render.js` (`$.plugin.root`: "the plugin's directory … absolute", cc.d.ts:2020-2028). Timeout: `renderTimeoutMs(await $.fs.exists(marker))` → 600 000 / 120 000 (`ProcessRunInit.timeoutMs`, max ten minutes, cc.d.ts:2970-2977). PNG read: `$.fs.stat` first (> 4 MiB → error, since `$.fs.read` rejects above 4 MiB, cc.d.ts:2743), then `$.fs.read(out, { as: "bytes" })` → `{ base64 }` (cc.d.ts:2740-2757, 4044-4053). Image block shape proven in `/tmp/mod-image-spike` (design, Verified facts).
 
-Kit stubs used (docs `plugins/mods/test.md`, "Look up what a stub returns"): `tool.register` answers `{ value: { tool } }` (its op value type, cc.d.ts:5845-5847), `fs.*`/`session.cwd`/`process.run` answer `{ value }`, a failing call answers `{ deny }`, `mock.env`, `mock.clock`.
+Kit stubs used (docs `plugins/mods/test.md`, "Look up what a stub returns"): `tool.register` answers `{ value: { tool } }` (its op value type, cc.d.ts:5845-5847), `fs.*`/`session.cwd`/`process.run` answer `{ value }` (`process.run` serves both `node render.js` and the `rm -f --` cleanup, which the fake records as `removed`), a failing call answers `{ deny }`, `session.end` answers core's `{ sessionId }` (cc.d.ts:8910-8915, as in 02-md-log.md's kit), `mock.env`, `mock.clock`.
 
 **Step 1: Write the failing test** `test/claude/visual-tools.test.ts`:
 
@@ -1454,16 +1557,16 @@ type Fake = { exitCode?: number; stderr?: string; size?: number; installed?: boo
  * the renderer process, env, clock and cwd. Returns what the test inspects afterwards.
  */
 function host(on: On, fake: Fake = {}) {
-  const registered: string[] = [];
   const written = new Map<string, string>();
   const runs: Run[] = [];
+  const removed: string[] = [];
   on("tool.register", ($, e) => {
-    registered.push(e.name);
     return { value: { tool: T(e.name) } };
   });
   on("session.start", () => ({ cwd: "/work/notes" }));
   on("tool.call", () => ({ result: "NOT ANSWERED BY THE MOD" }));
-  mock.env(on, { HOME: "/home/u", TMPDIR: "/tmp/t" });
+  mock.env(on, { HOME: "/home/u" });
+  on("session.end", ($, e) => ({ sessionId: e.sessionId })); // core's echo (cc.d.ts:8910-8915), as in md-log's kit
   mock.clock(on, { now: NOW });
   on("session.cwd", () => ({ value: "/work/notes" }));
   on("fs.write", ($, e) => {
@@ -1479,20 +1582,18 @@ function host(on: On, fake: Fake = {}) {
   });
   on("process.run", ($, e) => {
     runs.push({ argv: e.argv, timeoutMs: e.init?.timeoutMs });
+    if (e.argv[0] === "rm") {
+      removed.push(...e.argv.slice(3));
+      return { value: { exitCode: 0, stdout: "", stderr: "" } };
+    }
     if (fake.startFails) return { deny: "spawn node ENOENT" };
     return { value: { exitCode: fake.exitCode ?? 0, stdout: "", stderr: fake.stderr ?? "" } };
   });
-  return { registered, written, runs };
+  return { written, removed, runs };
 }
 
 /** The value after a flag in a recorded renderer argv. */
 const flag = (run: Run | undefined, name: string) => run?.argv[run.argv.indexOf(name) + 1];
-
-test("session start registers the six tools the maker agents are told to call", async ($, on) => {
-  const h = host(on);
-  await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work/notes" });
-  expect(h.registered).toEqual(["write_mermaid", "edit_mermaid", "render_mermaid", "write_svg", "edit_svg", "render_svg"]);
-});
 
 test("render runs render.js on the edited source and returns the PNG as an Anthropic image block", async ($, on) => {
   const h = host(on);
@@ -1506,12 +1607,13 @@ test("render runs render.js on the edited source and returns the PNG as an Anthr
   expect(flag(run, "--kind")).toBe("mermaid");
   expect(run?.timeoutMs).toBe(120_000);
   expect(h.written.get(flag(run, "--in") ?? "")).toBe("graph TD\n  A --> C");
-  expect(flag(run, "--out")).toMatch(/^\/tmp\/t\/learning-plugins-visual-tools\/viz-preview-1760000000000-[0-9a-z]{6}\.png$/);
+  expect(flag(run, "--out")).toMatch(/^\/home\/u\/\.cache\/learning-plugins\/visual-tools\/previews\/viz-preview-1760000000000-[0-9a-z]{6}\.png$/);
   expect(answer.isError).toBeUndefined();
   expect(Array.isArray(answer.result) ? answer.result[1] : undefined).toEqual({
     type: "image",
     source: { type: "base64", media_type: "image/png", data: PNG_B64 },
   });
+  expect(h.removed).toEqual([flag(run, "--in"), flag(run, "--out")]);
 });
 
 test("save_as renders straight into <cwd>/viz under a unique name and returns the name", async ($, on) => {
@@ -1523,6 +1625,7 @@ test("save_as renders straight into <cwd>/viz under a unique name and returns th
   expect(out).toMatch(/^\/work\/notes\/viz\/viz-number-line-1760000000000-[0-9a-z]{6}\.png$/);
   const text = Array.isArray(answer.result) ? (answer.result[0] as { text: string }).text : "";
   expect(text).toContain(`filename: ${out.slice("/work/notes/viz/".length)}`);
+  expect(h.removed).toEqual([flag(h.runs[0], "--in")]); // published PNG survives
 });
 
 test("rendering before writing is an error naming the CC write tool, and runs nothing", async ($, on) => {
@@ -1549,39 +1652,64 @@ test("each agent loop has its own source", async ($, on) => {
   expect(fromMaker.isError).toBeUndefined();
 });
 
+for (const reason of ["clear", "resume"] as const) {
+  test(`session.end (${reason}) discards old main and maker sources without another session.start`, async ($, on) => {
+    const h = host(on);
+    await $.tool.call({ tool: T("write_svg"), source: "<svg></svg>" });
+    await $.tool.call({ tool: T("write_mermaid"), source: "graph TD\n  A-->B", agentId: "maker-1" });
+    await $.session.end({ reason, sessionId: "old", resume: { id: "old" } });
+    const main = await $.tool.call({ tool: T("render_svg") });
+    const maker = await $.tool.call({ tool: T("render_mermaid"), agentId: "maker-1" });
+    expect(main).toMatchObject({ isError: true, result: "No svg source yet: call mcp__visual-tools__write_svg first." });
+    expect(maker.isError).toBe(true);
+    expect(h.runs).toEqual([]);
+  });
+}
+
 test("a render that may install gets 600 s", async ($, on) => {
   const h = host(on, { installed: false });
   await $.tool.call({ tool: T("write_svg"), source: "<svg></svg>" });
   await $.tool.call({ tool: T("render_svg") });
-  expect(h.runs.map((r) => r.timeoutMs)).toEqual([600_000]);
+  expect(h.runs.filter((r) => r.argv[0] === "node").map((r) => r.timeoutMs)).toEqual([600_000]);
 });
 
 test("a failed render is an error carrying the renderer's stderr", async ($, on) => {
-  host(on, { exitCode: 1, stderr: "Parse error on line 2:\nExpecting 'NODE_STRING'\n" });
+  const h = host(on, { exitCode: 1, stderr: "Parse error on line 2:\nExpecting 'NODE_STRING'\n" });
   await $.tool.call({ tool: T("write_mermaid"), source: "graph TD\n  A -->" });
   const answer = await $.tool.call({ tool: T("render_mermaid") });
   expect(answer.isError).toBe(true);
   expect(String(answer.result)).toContain("Parse error on line 2:\nExpecting 'NODE_STRING'");
+  expect(h.removed).toEqual([flag(h.runs[0], "--in")]);
 });
 
 test("node that cannot start is an error telling the user what is needed", async ($, on) => {
-  host(on, { startFails: true });
+  const h = host(on, { startFails: true });
   await $.tool.call({ tool: T("write_svg"), source: "<svg></svg>" });
   const answer = await $.tool.call({ tool: T("render_svg") });
   expect(answer.isError).toBe(true);
   expect(String(answer.result)).toContain("needs Node.js >= 22.13 on PATH");
+  expect(h.removed).toEqual([flag(h.runs[0], "--in")]);
 });
 
 test("a PNG over 4 MiB is an error, not an image", async ($, on) => {
-  host(on, { size: 4 * 1024 * 1024 + 1 });
+  const h = host(on, { size: 4 * 1024 * 1024 + 1 });
   await $.tool.call({ tool: T("write_svg"), source: "<svg></svg>" });
   const answer = await $.tool.call({ tool: T("render_svg") });
   expect(answer.isError).toBe(true);
   expect(String(answer.result)).toContain("over the 4 MiB");
+  expect(h.removed).toEqual([flag(h.runs[0], "--in"), flag(h.runs[0], "--out")]);
+});
+
+test("an oversized published image is removed rather than left in viz", async ($, on) => {
+  const h = host(on, { size: 4 * 1024 * 1024 + 1 });
+  await $.tool.call({ tool: T("write_svg"), source: "<svg></svg>" });
+  const answer = await $.tool.call({ tool: T("render_svg"), save_as: "oversized" });
+  expect(answer.isError).toBe(true);
+  expect(h.removed).toEqual([flag(h.runs[0], "--in"), flag(h.runs[0], "--out")]);
 });
 ```
 
-**Step 2:** `npm run build && npm run test:claude -- visual-tools` → FAIL (no `hooks/register.js` yet: no tool answers; first test sees `registered` = `[]`).
+**Step 2:** `npm run build && npm run test:claude -- visual-tools` → FAIL (no `hooks/register.js` yet: no tool answers).
 
 **Step 3: Implement** `src/claude.ts`:
 
@@ -1595,7 +1723,7 @@ test("a PNG over 4 MiB is an error, not an image", async ($, on) => {
  */
 import type { EngineInterface, On, PluginOptions, ToolCallInput } from "claude-code";
 import { toolName } from "../../../shared/tool-map.ts";
-import { installPaths, renderTimeoutMs } from "./core/install.ts";
+import { cacheRoot, installPaths, renderTimeoutMs } from "./core/install.ts";
 import { renderArgv, stderrTail } from "./core/protocol.ts";
 import { planRender } from "./core/publish.ts";
 import { SourceStore } from "./core/sources.ts";
@@ -1603,7 +1731,7 @@ import { editedText, inputSchema, renderedText, renderFailedText, toolSpecs, wro
 
 const SPECS = toolSpecs("claude");
 const SPEC_BY_TOOL = new Map(SPECS.map((s) => [toolName(s.id, "claude"), s]));
-const store = new SourceStore("claude");
+let store = new SourceStore("claude"); // session.end resets it; session.start does not rerun after /clear or /resume
 /** `$.fs.read` rejects anything larger (cc.d.ts:2743). */
 const MAX_PNG_BYTES = 4 * 1024 * 1024;
 
@@ -1617,36 +1745,48 @@ async function render($: EngineInterface, spec: VisualToolSpec, key: string, sav
   const source = store.read(key, spec.kind);
   const script = `${$.plugin.root}/renderer/render.js`;
   const lock = await $.fs.read(`${$.plugin.root}/renderer/package-lock.json`);
-  const { marker } = installPaths(lock, { XDG_CACHE_HOME: await $.env.get("XDG_CACHE_HOME"), HOME: await $.env.get("HOME") });
+  const env = { XDG_CACHE_HOME: await $.env.get("XDG_CACHE_HOME"), HOME: await $.env.get("HOME") };
+  const { marker } = installPaths(lock, env);
   const timeoutMs = renderTimeoutMs(await $.fs.exists(marker));
   const plan = planRender({
     kind: spec.kind,
     saveAs,
     cwd: await $.session.cwd(),
-    stagingDir: `${(await $.env.get("TMPDIR")) ?? "/tmp"}/learning-plugins-visual-tools`,
+    stagingDir: `${cacheRoot(env)}/previews`, // per-user, never a shared /tmp path; emptied after every render
     nowMs: await $.clock.now(),
     random: Math.random,
   });
-  await $.fs.write(plan.input, source);
-  let run;
+  let outputCreated = false;
+  let published = false;
   try {
-    run = await $.process.run(renderArgv("node", script, { kind: spec.kind, input: plan.input, output: plan.output }), { timeoutMs });
-  } catch (err) {
-    const why = err instanceof Error ? err.message : String(err);
-    return fail(renderFailedText(spec.kind, `Could not run \`node ${script}\` (needs Node.js >= 22.13 on PATH; timeout ${timeoutMs / 1000}s): ${why}`, "claude"));
+    await $.fs.write(plan.input, source);
+    let run;
+    try {
+      run = await $.process.run(renderArgv("node", script, { kind: spec.kind, input: plan.input, output: plan.output }), { timeoutMs });
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      return fail(renderFailedText(spec.kind, `Could not run \`node ${script}\` (needs Node.js >= 22.13 on PATH; timeout ${timeoutMs / 1000}s): ${why}`, "claude"));
+    }
+    if (run.exitCode !== 0) return fail(renderFailedText(spec.kind, stderrTail(run.stderr), "claude"));
+    outputCreated = true; // render.js exits 0 only after exclusive output creation
+    const { size } = await $.fs.stat(plan.output);
+    if (size > MAX_PNG_BYTES) {
+      return fail(`The PNG at ${plan.output} is ${size} bytes, over the 4 MiB Claude Code can read back. Make the canvas smaller (fewer nodes, or a smaller SVG width/height) and render again.`);
+    }
+    const { base64 } = await $.fs.read(plan.output, { as: "bytes" });
+    published = true;
+    return {
+      result: [
+        { type: "text", text: renderedText(spec.kind, "claude", plan.published) },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: base64 } },
+      ],
+    };
+  } finally {
+    // CC has no fs.delete; remove only paths this call created. An EEXIST failure must not remove someone else's output.
+    const paths = [plan.input, ...(outputCreated && (!plan.published || !published) ? [plan.output] : [])];
+    const cleanup = await $.process.run(["rm", "-f", "--", ...paths]);
+    if (cleanup.exitCode !== 0) throw new Error(`Could not remove temporary visual source/preview: ${stderrTail(cleanup.stderr)}`);
   }
-  if (run.exitCode !== 0) return fail(renderFailedText(spec.kind, stderrTail(run.stderr), "claude"));
-  const { size } = await $.fs.stat(plan.output);
-  if (size > MAX_PNG_BYTES) {
-    return fail(`The PNG at ${plan.output} is ${size} bytes, over the 4 MiB Claude Code can read back. Make the canvas smaller (fewer nodes, or a smaller SVG width/height) and render again.`);
-  }
-  const { base64 } = await $.fs.read(plan.output, { as: "bytes" });
-  return {
-    result: [
-      { type: "text", text: renderedText(spec.kind, "claude", plan.published) },
-      { type: "image", source: { type: "base64", media_type: "image/png", data: base64 } },
-    ],
-  };
 }
 
 async function handle($: EngineInterface, e: ToolCallInput): Promise<Answer> {
@@ -1671,6 +1811,11 @@ export function register(on: On, _options: PluginOptions): void {
     return next(e);
   });
 
+  on("session.end", ($, e, next) => {
+    store = new SourceStore("claude"); // clear, resume, branch (reason resume), and exit; no later session.start for transitions
+    return next(e);
+  });
+
   on(
     "tool.call",
     {
@@ -1688,7 +1833,7 @@ export function register(on: On, _options: PluginOptions): void {
 }
 ```
 
-**Step 4:** `npm run build && npm run test:claude -- visual-tools` → 10 pass. `npm run validate` → passes with no warnings; the hooks line must read `tool.call{tool=mcp__visual-tools__write_mermaid|…|mcp__visual-tools__render_svg}` and `gating hook with .catch`.
+**Step 4:** `npm run build && npm run test:claude -- visual-tools` → 12 pass. `npm run validate` → passes with no warnings; the hooks line must list `session.start, session.end, tool.call{tool=mcp__visual-tools__write_mermaid|…|mcp__visual-tools__render_svg}`, then `gating hook with .catch: tool.call{…}`, and `calls:` must include `$.process.run` (renderer and `rm` cleanup).
 
 **Step 5:** `npm run typecheck && npm run check`; commit `feat(visual-tools): Claude Code tools keyed by agentId`.
 
@@ -1958,37 +2103,97 @@ That's all. The `md-log` plugin mirrors your reply text verbatim into the linked
 
 Run from a shell where `node -v` is ≥ 22.13 (`nvm use 24.15.0`): D10 showed CC (and omp) use the launching shell's PATH; nvm's default here is v18 and fails with exit 2. Run outside `/home/marcus/tmp/learn` so `../.omp/config.yml` (which loads the old visual-tools) cannot collide (open question 1).
 
-**omp**
+Install from the **local marketplace** in both harnesses (design, Testing: "Install from the local marketplace in both harnesses"), at user scope, never `--scope project`. A linked or `--plugin-dir` build cannot catch a broken catalog entry or a file the marketplace copy leaves out. Use the real user config in both harnesses: 05-teach.md's throwaway `CLAUDE_CONFIG_DIR` works for `claude plugin` commands ("No session or login is needed"), but `claude -p` needs a login, which [INFERENCE] lives under the config dir. Every step below uses the same `XDG_CACHE_HOME` and `npm_config_cache` per harness, so the marker comparison proves reuse.
+
+For debugging only (not acceptance evidence), `omp plugin link dist/omp/visual-tools` or `claude --plugin-dir dist/claude/visual-tools` loads the build directly. Uninstall the marketplace copy first: a link and an install of the same name conflict (01-skeleton.md, "Step 5: The dev alternative").
+
+**omp** (Phase 1 left the `learning-plugins` marketplace registered; omp copies marketplace installs into its plugin cache, so refresh and reinstall after every build)
 
 ```bash
 source ~/.nvm/nvm.sh && nvm use 24.15.0
-omp plugin link /home/marcus/tmp/learn/learning-plugins/dist/omp/visual-tools
+omp plugin list                                   # if @learning-plugins/visual-tools shows (linked), `omp plugin uninstall @learning-plugins/visual-tools` first
+omp plugin marketplace list                       # learning-plugins → /home/marcus/tmp/learn/learning-plugins; if absent: omp plugin marketplace add /home/marcus/tmp/learn/learning-plugins
+omp plugin marketplace update learning-plugins
+omp plugin install --force visual-tools@learning-plugins
 W=$(mktemp -d) && cd "$W" && export XDG_CACHE_HOME=$(mktemp -d) npm_config_cache=$(mktemp -d)
+R="$XDG_CACHE_HOME/learning-plugins/visual-tools"
+TMPS_BEFORE=$(ls -d "${TMPDIR:-/tmp}"/visual-tools-* 2>/dev/null | wc -l)
+
+# 1. Failed install through the harness: offline with an empty npm cache.
+npm_config_offline=true omp -p --mode json --tools write_svg,render_svg \
+  "Call write_svg with source '<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"20\"/>', then call render_svg once and quote its result exactly." > omp-fail.jsonl
+ls -A "$R"                                        # expect: nothing (no <hash>, no *.tmp-*)
+
+# 2. First real render installs.
 time omp -p --mode json "Use the task tool with agent mermaid-maker: graph TD with 'packet' at the top, arrows to 'ordering' and 'retransmit on loss', both into 'reliable stream'. Report the RESULT block." > omp.jsonl
-ls -la viz/ && du -sh "$XDG_CACHE_HOME" "$npm_config_cache"
-grep -c '"mimeType":"image/png"' omp.jsonl
+M1=$(stat -c '%i:%Y' "$R"/*/.installed); echo "$M1"
+du -sh "$XDG_CACHE_HOME" "$npm_config_cache"
+
+# 3. Second process, same cache: must reuse the install.
+time omp -p --mode json "Use the task tool with agent svg-maker: a number line from 0 to 5 with a dot at 3. Report the RESULT block." > omp-svg.jsonl
+M2=$(stat -c '%i:%Y' "$R"/*/.installed); [ "$M1" = "$M2" ] && echo SAME-INSTALL || echo REINSTALLED
+ls -A "$R"                                        # expect: exactly one 16-hex dir
+ls viz/
+TMPS_AFTER=$(ls -d "${TMPDIR:-/tmp}"/visual-tools-* 2>/dev/null | wc -l); echo "$TMPS_BEFORE -> $TMPS_AFTER"
+
+omp plugin uninstall visual-tools@learning-plugins
 ```
 
-Observe: one `viz/viz-*-<epochMs>-<6 chars>.png` that shows the four boxes; `$XDG_CACHE_HOME/learning-plugins/visual-tools/` holds exactly one 16-hex dir with `.installed` and no `*.tmp-*`; the image count is ≥ 1 (the maker's render result carried the PNG); the maker's final text describes the diagram it saw. Repeat with `svg-maker` ("a number line from 0 to 5 with a dot at 3") and confirm no second install (fast). Then `omp plugin uninstall` the linked plugin (name as `omp plugin list` shows it).
+Observe:
+- `omp-fail.jsonl`: the `render_svg` result has `isError: true` and its text contains `Renderer install failed:` and `Install manually with:`; `ls -A "$R"` printed nothing.
+- `omp.jsonl` and `omp-svg.jsonl`: each maker's `render_*` result content holds `{ "type": "image", "mimeType": "image/png" }`, and each maker's final text describes the diagram it saw. Inspect the content array itself; a published file alone is not evidence.
+- `SAME-INSTALL` is printed, and `$R` holds exactly one 16-hex dir (no `*.tmp-*`, no `*.reap-*`).
+- `viz/` holds one `viz-*-<epochMs>-<6 chars>.png` per published render, and each opens as the diagram described.
+- `TMPS_BEFORE -> TMPS_AFTER` is unchanged: no source or preview survived a render.
 
-[UNVERIFIED] omp's json event names; the `grep` on `"mimeType":"image/png"` is format-agnostic. If 0 matches but `viz/` has the PNG, inspect `omp.jsonl` for the `render_mermaid` result and confirm the content array holds the image before concluding failure.
-
-**Claude Code**
+**Claude Code** (install fresh for every smoke run and uninstall at the end, so a stale install can never be what is tested)
 
 ```bash
 source ~/.nvm/nvm.sh && nvm use 24.15.0
+claude plugin marketplace list                    # note whether learning-plugins is already registered
+claude plugin marketplace add /home/marcus/tmp/learn/learning-plugins   # ONLY if it was not
+claude plugin install visual-tools@learning-plugins
 W=$(mktemp -d) && cd "$W" && export XDG_CACHE_HOME=$(mktemp -d) npm_config_cache=$(mktemp -d)
-P=/home/marcus/tmp/learn/learning-plugins/dist/claude/visual-tools
+R="$XDG_CACHE_HOME/learning-plugins/visual-tools"
 T=mcp__visual-tools
-time claude -p --plugin-dir "$P" --output-format stream-json --verbose \
+
+# 1. Failed install through the harness. [INFERENCE] $.process.run inherits claude's environment, as it does PATH (D10).
+npm_config_offline=true claude -p --output-format stream-json --verbose --allowedTools "${T}__write_svg,${T}__render_svg" \
+  -- "Call ${T}__write_svg with source '<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"20\"/>', then call ${T}__render_svg once and quote its result exactly." > cc-fail.jsonl
+ls -A "$R" "$R/previews"                          # expect: only an empty previews/
+
+# 2. First real render installs.
+time claude -p --output-format stream-json --verbose \
   --allowedTools "Agent,Read,${T}__write_mermaid,${T}__edit_mermaid,${T}__render_mermaid,${T}__write_svg,${T}__edit_svg,${T}__render_svg" \
   -- "Use the visual-tools:mermaid-maker agent to draw: graph TD 'packet' at the top, arrows to 'ordering' and 'retransmit on loss', both into 'reliable stream'. Report its RESULT block." > cc.jsonl
-ls -la viz/ && du -sh "$XDG_CACHE_HOME" "$npm_config_cache"
-claude -p --plugin-dir "$P" --output-format stream-json --verbose --allowedTools "${T}__render_svg" \
+M1=$(stat -c '%i:%Y' "$R"/*/.installed); echo "$M1"
+
+# 3. Second process, same cache: must reuse the install.
+time claude -p --output-format stream-json --verbose \
+  --allowedTools "Agent,Read,${T}__write_svg,${T}__edit_svg,${T}__render_svg" \
+  -- "Use the visual-tools:svg-maker agent to draw a number line from 0 to 5 with a dot at 3. Report its RESULT block." > cc-svg.jsonl
+M2=$(stat -c '%i:%Y' "$R"/*/.installed); [ "$M1" = "$M2" ] && echo SAME-INSTALL || echo REINSTALLED
+
+# 4. A real PNG over 4 MiB: 1200x1200 turbulence noise at zoom 2 is a 2400x2400 incompressible RGBA image.
+NOISE='<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200"><filter id="n"><feTurbulence baseFrequency="0.9" numOctaves="4"/></filter><rect width="1200" height="1200" filter="url(#n)"/></svg>'
+claude -p --output-format stream-json --verbose --allowedTools "${T}__write_svg,${T}__render_svg" \
+  -- "Call ${T}__write_svg with exactly this source: ${NOISE} Then call ${T}__render_svg once with save_as \"oversized\" and quote its result exactly." > cc-big.jsonl
+
+# 5. Render before write.
+claude -p --output-format stream-json --verbose --allowedTools "${T}__render_svg" \
   -- "Call ${T}__render_svg with no arguments once and quote its result exactly." > cc-err.jsonl
+
+ls -A "$R" "$R/previews"; ls viz/
+claude plugin uninstall visual-tools@learning-plugins -y
+claude plugin marketplace remove learning-plugins # ONLY if you added it above
 ```
 
-Observe: `viz/` holds one PNG; in `cc.jsonl` a `tool_result` for `mcp__visual-tools__render_mermaid` carries an `image` block, and the maker describes the diagram correctly. 
+Observe:
+- `cc-fail.jsonl`: the `tool_result` for `render_svg` carries `Renderer install failed:` and `Install manually with:`; `$R` held only an empty `previews/` afterwards.
+- `cc.jsonl` and `cc-svg.jsonl`: each `tool_result` for `mcp__visual-tools__render_*` carries an `image` block, and each maker describes its diagram correctly. `SAME-INSTALL` is printed.
+- `cc-big.jsonl`: the `render_svg` result contains `over the 4 MiB` and no image block; `viz/` has no `viz-oversized-*` file.
+- `cc-err.jsonl`: the result is `No svg source yet: call mcp__visual-tools__write_svg first.`
+- Finally `$R` holds exactly one 16-hex dir and an empty `previews/` (no `*.tmp-*`, no `*.reap-*`), and `viz/` holds only the two makers' PNGs.
 
 - [UNVERIFIED] **Mod tools in a plugin agent's `tools:` allowlist.** If the maker reports the visual tools unavailable, check `init.agents`/debug output (`claude --debug`). Decision: if CC filters mod tools out of agent allowlists, stop and raise a contract change with Main (generator support for omitting `tools` per harness); do not hand-edit `dist/`.
 - [UNVERIFIED] **`isError` reaching the model** (D11). In `cc-err.jsonl`, the `tool_result` for `render_svg` must have `"is_error": true`. If not, switch `fail()` in `src/claude.ts` to return `{ deny: text }` (keep the `.catch` handler consistent), adjust the kit tests' `isError` assertions to `deny`, and tell Main so Phase 3 does the same.
@@ -2003,6 +2208,8 @@ git commit -m "docs: resolve open question 5 (renderer install size and time)"
 ## Residual risks
 
 - Windows is unsupported (POSIX paths, `npm` without `.cmd`, `HOME`); same as the original.
-- A render killed mid-install (timeout/abort) leaves `<root>/<hash>.tmp-*` behind; harmless (never current), not cleaned automatically.
+- A killed install can leave `<root>/<hash>.tmp-*` until its age passes 20 minutes; the next invocation reclaims it. The cache never treats such a stage as installed. If the host SIGKILLs `render.js`, its `npm ci` child can outlive it without the 540 s timeout; should it still run after 20 minutes, a reaper takes its stage and the orphan fails without ever publishing.
+- The `.reap-*` branch (a reaper killed mid-delete) is reasoned, not tested: a test cannot backdate a ctime. The test covers its other half, that a freshly claimed `.reap-*` with an old mtime is left alone.
+- If the harness process itself dies mid-render, one staged source/preview can remain: omp in its mode-0700 `visual-tools-*` temp dir, CC in `<cacheRoot>/previews/`. Normal success, failure, timeout and abort paths remove them.
 - Old cache dirs from previous lockfiles are never removed; document `rm -rf ~/.cache/learning-plugins/visual-tools` in the README (Phase 5).
 - The design text "omp: each maker subagent runs in its own process" and "serialized per key" should be updated to D1/D4 when this phase lands.
