@@ -3,5 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Mermaid and SVG drawing tools with render-and-look maker agents and the visualize skill."
+  "description": "Mermaid and SVG drawing tools with render-and-look maker agents and the visualize skill.",
+  "plugin": {
+    "extraBundles": [{ "entry": "src/renderer/cli.ts", "out": "renderer/render.js", "platform": "node" }],
+    "copy": ["renderer/package.json", "renderer/package-lock.json"]
+  }
 }

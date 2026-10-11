@@ -1,0 +1,12 @@
+{
+  "name": "@learning-plugins/visual-tools-renderer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Runtime dependencies of render.js, installed lazily into the user cache.",
+  "dependencies": {
+    "@mermaid-js/mermaid-cli": "12.0.0",
+    "@resvg/resvg-js": "2.6.2",
+    "puppeteer": "25.13.0"
+  }
+}
