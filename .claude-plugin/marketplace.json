@@ -4,5 +4,12 @@
   "owner": {
     "name": "Marcus Xavier"
   },
-  "plugins": []
+  "plugins": [
+    {
+      "name": "md-log",
+      "source": "./dist/claude/md-log",
+      "description": "Mirror the session (prompts, prose, quiz and question answers) into a markdown note.",
+      "version": "0.1.0"
+    }
+  ]
 }

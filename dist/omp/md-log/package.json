@@ -1,0 +1,6 @@
+{
+  "name": "@learning-plugins/md-log",
+  "version": "0.1.0",
+  "description": "Mirror the session (prompts, prose, quiz and question answers) into a markdown note.",
+  "type": "module"
+}
