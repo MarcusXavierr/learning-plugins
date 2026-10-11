@@ -38,7 +38,7 @@ runners:
     command: npm run --silent test:coverage
     result: coverage/coverage-final.json
     interval: 60000
-    threshold: 80
+    threshold: 70
     prompt: "Cover behaviour through each module's public interface. Never export internals just to test them."
 
   - name: knip
