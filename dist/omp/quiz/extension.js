@@ -342,7 +342,13 @@ var TOOLS = {
   ask: { omp: "ask", claude: "AskUserQuestion" },
   read: { omp: "read", claude: "Read" },
   web_search: { omp: "web_search", claude: "WebSearch" },
-  web_fetch: { omp: "read", claude: "WebFetch" }
+  web_fetch: { omp: "read", claude: "WebFetch" },
+  write_mermaid: { omp: "write_mermaid", claude: "mcp__visual-tools__write_mermaid" },
+  edit_mermaid: { omp: "edit_mermaid", claude: "mcp__visual-tools__edit_mermaid" },
+  render_mermaid: { omp: "render_mermaid", claude: "mcp__visual-tools__render_mermaid" },
+  write_svg: { omp: "write_svg", claude: "mcp__visual-tools__write_svg" },
+  edit_svg: { omp: "edit_svg", claude: "mcp__visual-tools__edit_svg" },
+  render_svg: { omp: "render_svg", claude: "mcp__visual-tools__render_svg" }
 };
 function lookup(map, kind, id, h) {
   const entry = Object.hasOwn(map, id) ? map[id] : void 0;

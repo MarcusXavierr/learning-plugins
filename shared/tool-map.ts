@@ -12,11 +12,20 @@ export const TOOLS: Record<string, Record<Harness, string>> = {
   read: { omp: "read", claude: "Read" },
   web_search: { omp: "web_search", claude: "WebSearch" },
   web_fetch: { omp: "read", claude: "WebFetch" },
+  write_mermaid: { omp: "write_mermaid", claude: "mcp__visual-tools__write_mermaid" },
+  edit_mermaid: { omp: "edit_mermaid", claude: "mcp__visual-tools__edit_mermaid" },
+  render_mermaid: { omp: "render_mermaid", claude: "mcp__visual-tools__render_mermaid" },
+  write_svg: { omp: "write_svg", claude: "mcp__visual-tools__write_svg" },
+  edit_svg: { omp: "edit_svg", claude: "mcp__visual-tools__edit_svg" },
+  render_svg: { omp: "render_svg", claude: "mcp__visual-tools__render_svg" },
 };
 
 /** "<plugin>/<agent>" → per-harness agent name: `<agent>` in omp, `<plugin>:<agent>` in CC. */
 /** @public Shared agent mapping extended by plugin phases. */
-export const AGENTS: Record<string, Record<Harness, string>> = {};
+export const AGENTS: Record<string, Record<Harness, string>> = {
+  "visual-tools/mermaid-maker": { omp: "mermaid-maker", claude: "visual-tools:mermaid-maker" },
+  "visual-tools/svg-maker": { omp: "svg-maker", claude: "visual-tools:svg-maker" },
+};
 
 function lookup(map: Record<string, Record<Harness, string>>, kind: string, id: string, h: Harness): string {
   const entry = Object.hasOwn(map, id) ? map[id] : undefined;

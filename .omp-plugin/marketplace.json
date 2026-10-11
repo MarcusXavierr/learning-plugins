@@ -16,6 +16,12 @@
       "source": "./dist/omp/quiz",
       "description": "Graded multiple-choice quiz tool: shuffled options, I don't know, a free-text note, and ✓/✗ feedback with an explanation.",
       "version": "0.1.0"
+    },
+    {
+      "name": "visual-tools",
+      "source": "./dist/omp/visual-tools",
+      "description": "Mermaid and SVG drawing tools with render-and-look maker agents and the visualize skill.",
+      "version": "0.1.0"
     }
   ]
 }

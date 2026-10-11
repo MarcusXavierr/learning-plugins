@@ -1,0 +1,8 @@
+{
+  "name": "visual-tools",
+  "version": "0.1.0",
+  "description": "Mermaid and SVG drawing tools with render-and-look maker agents and the visualize skill.",
+  "author": {
+    "name": "Marcus Xavier"
+  }
+}

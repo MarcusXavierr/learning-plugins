@@ -1,0 +1,6 @@
+{
+  "name": "@learning-plugins/visual-tools",
+  "version": "0.1.0",
+  "description": "Mermaid and SVG drawing tools with render-and-look maker agents and the visualize skill.",
+  "type": "module"
+}
