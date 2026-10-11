@@ -362,6 +362,13 @@ From docs and types:
   - omp has no inter-plugin dependencies.
   - omp prefers `.omp-plugin/marketplace.json` over `.claude-plugin/marketplace.json`.
 
+Phase 5, Claude Code 2.1.296, local marketplace, empty `CLAUDE_CONFIG_DIR`:
+
+- `claude plugin install teach@learning-plugins` installs and enables `quiz` and `md-log` from `plugin.json` `dependencies`; the success line ends `(+ 2 dependencies: …)`. `uninstall --prune -y` removes them again.
+- `--plugin-dir dist/claude/teach` alone leaves `teach` disabled with `Dependency "…" is not installed`. Passing every dependency's dir, or the parent `dist/claude` once (CC ≥ 2.1.265), loads them all.
+- A local-folder marketplace is read in place from `dist/claude/<plugin>`; omp copies marketplace installs into its plugin cache.
+- omp 18.2.10 skips a linked (`omp plugin link`) package whose `package.json` has no `omp`/`pi` key (`extensibility/plugins/loader.ts:179-183`; `omp plugin doctor`: `No omp/pi manifest (not an omp plugin)`), so a linked prompts-only `dist/omp/teach` adds no `researcher` agent (`Unknown agent "researcher"`). `omp --plugin-dir dist/omp/teach` and marketplace installs read `agents/` and `skills/` without that key: with `--plugin-dir`, the `task` tool found `researcher` and ran it on its frontmatter model chain.
+
 From the skeleton (Phase 1), Claude Code 2.1.296, omp 18.2.10:
 
 - **Vendored CC types**: `types/claude-code/` holds `claude-code/index.d.ts` and `claude-code-tools/index.d.ts` as written by Claude Code 2.1.296 on an interactive `--plugin-dir` load (`// Written by Claude Code 2.1.296.`). CC also writes `claude-code-mcp/` (not vendored: machine-specific) and a root `tsconfig.json` into that plugin dir; both are ignored by git and by `npm run check`.
