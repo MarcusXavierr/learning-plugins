@@ -1,0 +1,8 @@
+{
+  "name": "hello",
+  "version": "0.1.0",
+  "description": "Throwaway skeleton plugin: a command, an image tool and a session probe in both harnesses.",
+  "author": {
+    "name": "Marcus Xavier"
+  }
+}

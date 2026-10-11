@@ -4,5 +4,12 @@
   "owner": {
     "name": "Marcus Xavier"
   },
-  "plugins": []
+  "plugins": [
+    {
+      "name": "hello",
+      "source": "./dist/omp/hello",
+      "description": "Throwaway skeleton plugin: a command, an image tool and a session probe in both harnesses.",
+      "version": "0.1.0"
+    }
+  ]
 }
