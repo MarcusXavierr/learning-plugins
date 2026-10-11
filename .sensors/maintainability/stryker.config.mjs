@@ -11,5 +11,7 @@ export default {
   incremental: true,
   incrementalFile: "reports/mutation/stryker-incremental.json",
   tempDirName: ".stryker-tmp",
+  // The live sensor sidecar socket cannot be copied into a mutation sandbox.
+  ignorePatterns: [".sensors/*.sock"],
   thresholds: { high: 80, low: 60, break: null },
 };

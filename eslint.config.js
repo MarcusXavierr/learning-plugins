@@ -57,4 +57,8 @@ export default defineConfig([
     },
   },
   // Per-file threshold exceptions go below, one block per file, each with a comment saying why.
+  // Manifest shape/path validation is one cohesive trust-boundary operation.
+  { files: ["build/plugin-source.ts"], rules: { complexity: ["error", { max: 23 }] } },
+  // Prompt validation and expansion form one cohesive rendering algorithm.
+  { files: ["build/prompts.ts"], rules: { complexity: ["error", { max: 37 }], "max-lines-per-function": ["error", { max: 80, skipBlankLines: true, skipComments: true, IIFEs: true }] } },
 ]);
