@@ -1,0 +1,8 @@
+{
+  "name": "learning-plugins",
+  "description": "Learning workflow plugins for Oh My Pi and Claude Code, built from one source tree.",
+  "owner": {
+    "name": "Marcus Xavier"
+  },
+  "plugins": []
+}
