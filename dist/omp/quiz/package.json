@@ -2,5 +2,10 @@
   "name": "@learning-plugins/quiz",
   "version": "0.1.0",
   "description": "Graded multiple-choice quiz tool: shuffled options, I don't know, a free-text note, and ✓/✗ feedback with an explanation.",
-  "type": "module"
+  "type": "module",
+  "omp": {
+    "extensions": [
+      "./extension.js"
+    ]
+  }
 }
