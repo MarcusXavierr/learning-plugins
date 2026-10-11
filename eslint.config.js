@@ -44,6 +44,12 @@ export default defineConfig([
   { files: ["build/**/*.ts"], rules: { "no-console": "off" } },
   // The design fixes adapter entry file names.
   { files: ["plugins/*/src/omp.ts", "plugins/*/src/claude.ts"], rules: { "llm-core/filename-match-export": "off" } },
+  // CC's `On` is a huge overload set; checking every hook callback against it makes this rule hang (>5 min per file).
+  // `on()` accepts async handlers by contract, so the void-return check on arguments has nothing to catch here.
+  {
+    files: ["plugins/*/src/claude.ts", "plugins/*/src/claude/**/*.ts", "plugins/*/test/claude/**/*.ts"],
+    rules: { "@typescript-eslint/no-misused-promises": ["error", { checksVoidReturn: { arguments: false } }] },
+  },
   // Tests and test doubles: verbose by nature, and fakes bypass host types on purpose.
   {
     files: ["**/*.test.ts", "test-support/**/*.ts"],
