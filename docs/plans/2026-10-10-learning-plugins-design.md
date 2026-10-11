@@ -1,7 +1,7 @@
 # learning-plugins: design
 
 Date: 2026-10-10
-Status: approved in a grill session, then hardened by a staff-engineer review. Implementation not started.
+Status: implemented and released as v0.1.0 on 2026-10-11 (https://github.com/MarcusXavierr/learning-plugins). Approved in a grill session, then hardened by a staff-engineer review.
 
 ## Goal
 
@@ -334,6 +334,8 @@ Development is test-first. A test earns its place only if a plausible bug would 
 
 **Dogfooding**: as each plugin lands, it is used from sessions in this repo via `omp plugin link dist/omp/<plugin>` and `claude --plugin-dir dist/claude/<plugin>` (plus its dependencies). `../.pi` and `../.omp` are never modified or deleted.
 
+Since the release, sessions in this repo use the marketplace install from GitHub; the link and `--plugin-dir` loop is for unreleased work.
+
 ## Verified facts
 
 Spike in `/tmp/mod-image-spike`, Claude Code 2.1.296, real `claude -p` sessions:
@@ -368,6 +370,8 @@ Phase 5, Claude Code 2.1.296, local marketplace, empty `CLAUDE_CONFIG_DIR`:
 - `--plugin-dir dist/claude/teach` alone leaves `teach` disabled with `Dependency "…" is not installed`. Passing every dependency's dir, or the parent `dist/claude` once (CC ≥ 2.1.265), loads them all.
 - A local-folder marketplace is read in place from `dist/claude/<plugin>`; omp copies marketplace installs into its plugin cache.
 - omp 18.2.10 skips a linked (`omp plugin link`) package whose `package.json` has no `omp`/`pi` key (`extensibility/plugins/loader.ts:179-183`; `omp plugin doctor`: `No omp/pi manifest (not an omp plugin)`), so a linked prompts-only `dist/omp/teach` adds no `researcher` agent (`Unknown agent "researcher"`). `omp --plugin-dir dist/omp/teach` and marketplace installs read `agents/` and `skills/` without that key: with `--plugin-dir`, the `task` tool found `researcher` and ran it on its frontmatter model chain.
+- Release, 2026-10-11: from `MarcusXavierr/learning-plugins`, both harnesses installed the README's lines and passed master acceptance tests 2, 3 and 4 in fresh sessions. In both, the `researcher` agent was found and dispatched and answered `1981`, but answered a fact that simple without calling web search; a separate run told to search did call `WebSearch` and got results.
+- Parent directory `/home/marcus/tmp/learn` with user-scope installs: the original `.pi` quiz (an `xd://quiz` device) silently shadows the plugin's `quiz`, and the old `ask_user_question` and visual tools load too, so working there needs the ported entries dropped from `../.omp/config.yml` or the plugins disabled.
 
 From the skeleton (Phase 1), Claude Code 2.1.296, omp 18.2.10:
 
@@ -379,12 +383,12 @@ From the skeleton (Phase 1), Claude Code 2.1.296, omp 18.2.10:
 - **Open question 4**: `$.session.messages()` returns a mod tool's `ToolUseSummary.result` array as returned (the text and base64 image blocks), and `AskUserQuestion`'s `result.answers` maps the question text to the chosen label (probe: `/tmp/hello-smoke/hello-probe.json`, `"Which colour do you prefer?": "Blue"`).
 - **CC adapter lint**: `eslint.config.js` scopes `@typescript-eslint/no-misused-promises` with `checksVoidReturn.arguments: false` to CC adapter files because the rule hangs on CC 2.1.296's `On` overloads.
 
-## Open questions
+## Open questions (all resolved)
 
-| # | Question | Resolve in |
-|---|---|---|
-| 1 | Does omp, started inside `learning-plugins/`, also load `../.omp/config.yml`? If so, old and new tools collide (`quiz` twice). | answered (Verified facts, skeleton) |
-| 2 | What props does the CC `ToolUse` render site receive (is the tool result available) to draw quiz feedback? | quiz |
-| 3 | What is the exact `tool_result` `details` of omp's native `ask`? Capture it from a real session before writing md-log's mapping. | md-log |
-| 4 | Does CC's `ToolUseSummary.result` (from `$.session.messages()`) hold the quiz `result` array and `AskUserQuestion`'s `{answers}` as returned? The skeleton's `hello` plugin captures both. | answered (Verified facts, skeleton) |
-| 5 | Renderer install: 456 MB on disk (+95 MB npm download cache), first `npm ci` 7.7 s from an empty npm cache and empty renderer cache (the whole first `render.js` call, SVG render included; an earlier planning run on the same machine took 41 s, so download speed dominates), 6.5–9.5 s with a warm npm cache, on an i5-1135G7 laptop (Fedora 39, Node 24.15.0). Later renders: SVG ~0.3 s, Mermaid ~1–3 s (Chrome start). A first maker session that installs took 24 s (CC) / 28 s (omp) end to end. | resolved in Phase 4 |
+| # | Question | Resolved in | Answer |
+|---|---|---|---|
+| 1 | Does omp, started inside `learning-plugins/`, also load `../.omp/config.yml`? If so, old and new tools collide (`quiz` twice). | skeleton | No: omp reads project config only from `<cwd>/.omp`, but agent discovery walks every ancestor, so the committed `.omp/agents/.gitkeep` shields `../.omp/agents` (Verified facts, skeleton). |
+| 2 | What props does the CC `ToolUse` render site receive (is the tool result available) to draw quiz feedback? | quiz | Yes: the `ToolResult` render site receives the stored result as `props.output`, so the quiz draws its ✓/✗ lines there instead of the raw `<quiz-result>` JSON (Phase 3 Task 10, kit test and real session). |
+| 3 | What is the exact `tool_result` `details` of omp's native `ask`? Capture it from a real session before writing md-log's mapping. | md-log | `AskToolDetails`: one question `{question, options, multi, selectedOptions, customInput?, note?, timedOut?}`, several `{results: [...]}`, "Chat about this" `{chatRedirect: true, questions}`; cancel throws, so `tool_result` arrives with `details: undefined` and `isError: true` (md-log omp adapter, above). |
+| 4 | Does CC's `ToolUseSummary.result` (from `$.session.messages()`) hold the quiz `result` array and `AskUserQuestion`'s `{answers}` as returned? The skeleton's `hello` plugin captures both. | skeleton | Yes: a mod tool's `result` array comes back as returned, and `AskUserQuestion`'s `result.answers` maps the question text to the chosen label (Verified facts, skeleton). |
+| 5 | How big is the renderer install, and how long does the first `npm ci` take? | visual-tools | 456 MB on disk (+95 MB npm download cache); the first `npm ci` took 7.7 s from empty npm and renderer caches (an earlier planning run on the same machine took 41 s, so download speed dominates) and 6.5 to 9.5 s with a warm npm cache, on an i5-1135G7 laptop (Fedora 39, Node 24.15.0). Later renders: SVG about 0.3 s, Mermaid 1 to 3 s (Chrome start). A first maker session that installs took 24 s (CC) and 28 s (omp) end to end. |
