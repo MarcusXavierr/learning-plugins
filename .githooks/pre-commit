@@ -1,0 +1,4 @@
+#!/bin/sh
+# Sensors gate: blocks commits that break types, lint rules or the ports-and-adapters layering.
+git diff --cached --name-only --diff-filter=ACMR | grep -Eq '\.(ts|js|cjs|mjs|json|ya?ml|sh)$' || exit 0
+npm run --silent typecheck && npm run --silent lint && npm run --silent structure

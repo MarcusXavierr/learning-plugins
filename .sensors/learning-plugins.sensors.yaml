@@ -1,0 +1,70 @@
+version: 1
+prompt: "Fix every failing sensor before you commit or report done, including issues you did not introduce, unless the fix is risky or large; then tell the user instead. Guidance under a finding is project policy."
+
+runners:
+  - name: lint
+    parser: eslint
+    enabled: true
+    mode: interval
+    command: npm run --silent lint:sensor
+    interval: 15000
+
+  - name: types
+    parser: tsc
+    enabled: true
+    mode: interval
+    command: npm run --silent typecheck -- --pretty false
+    interval: 20000
+
+  - name: tests
+    parser: vitest
+    enabled: true
+    mode: interval
+    command: npm run --silent test
+    interval: 25000
+
+  - name: structure
+    parser: depcruise
+    enabled: true
+    mode: interval
+    command: npm run --silent structure
+    interval: 45000
+    prompt: "Layering violations are design errors: move the code to the right layer or invert the dependency through core. Never edit or exclude a rule to make it pass."
+
+  - name: cov
+    parser: vitest_cov
+    enabled: true
+    mode: interval
+    command: npm run --silent test:coverage
+    result: coverage/coverage-final.json
+    interval: 60000
+    threshold: 80
+    prompt: "Cover behaviour through each module's public interface. Never export internals just to test them."
+
+  - name: knip
+    parser: default
+    enabled: true
+    mode: interval
+    command: node .sensors/maintainability/knip-sensor.mjs
+    interval: 90000
+
+  - name: security
+    parser: semgrep
+    enabled: true
+    mode: interval
+    command: semgrep scan --config p/typescript --config p/secrets --json --metrics=off --quiet --exclude=dist --exclude=docs --exclude=types .
+    interval: 180000
+    prompt: "Fix true positives. For a false positive add `// nosemgrep: <rule-id> -- <reason>` on the line."
+
+  - name: stryker
+    parser: stryker
+    enabled: true
+    mode: triggered
+    command: npm run --silent test:mutation
+    result: reports/mutation/mutation.json
+    prompt: "Informational; run `npm run test:mutation` yourself after finishing a core module's tests, or when asked."
+
+  - name: mut_state
+    enabled: true
+    mode: on_check
+    command: python3 .sensors/maintainability/query_stryker.py reports/mutation/mutation.json files --changed -v

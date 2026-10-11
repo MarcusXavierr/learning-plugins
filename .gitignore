@@ -1,0 +1,8 @@
+.envrc
+node_modules/
+.test-build/
+coverage/
+reports/
+.stryker-tmp/
+# Claude Code adds this to any plugin dir it loads with --plugin-dir (its .claude-plugin/types/ ignores itself)
+dist/claude/*/tsconfig.json

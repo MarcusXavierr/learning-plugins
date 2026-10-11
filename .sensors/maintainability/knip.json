@@ -1,0 +1,11 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignore": ["dist/**", "types/claude-code/**", "build/test/fixtures/**"],
+  "workspaces": {
+    ".": { "entry": ["build/cli.ts"], "project": ["build/**/*.ts", "shared/**/*.ts", "test-support/**/*.ts"] },
+    "plugins/*": {
+      "entry": ["src/omp.ts", "src/claude.ts", "src/renderer/cli.ts", "test/**/*.test.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts"]
+    }
+  }
+}

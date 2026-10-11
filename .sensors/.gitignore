@@ -1,0 +1,8 @@
+# Sensors runtime state
+events*.jsonl
+sessions*.jsonl
+*history.jsonl
+*.log
+*.state.json
+*.control.json
+*.sock
