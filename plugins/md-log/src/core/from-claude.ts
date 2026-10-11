@@ -27,14 +27,15 @@ export interface ClaudeMessage {
 }
 
 /** A tool use md-log logged a question for and still owes an answer: a `TurnStepToolUse` (cc.d.ts:10581-10590). */
-interface PendingUse { readonly name: string; readonly input: unknown }
+export interface PendingUse { readonly name: string; readonly input: unknown }
 
-function isQaTool(name: string): boolean {
+/** Whether md-log logs a tool's uses as questions and answers: `mcp__quiz__quiz` and `AskUserQuestion`. */
+export function isQaTool(name: string): boolean {
   return name === QUIZ || name === ASK;
 }
 
 /** Question blocks for an `mcp__quiz__quiz` or `AskUserQuestion` use; [] for every other tool. */
-function claudeQuestionEntries(use: PendingUse): Entry[] {
+export function claudeQuestionEntries(use: PendingUse): Entry[] {
   if (use.name === QUIZ) return [quizQuestionEntry(use.input)];
   if (use.name === ASK) return askQuestionEntries(use.input);
   return [];
