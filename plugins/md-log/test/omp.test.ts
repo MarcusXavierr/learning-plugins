@@ -67,6 +67,33 @@ describe("/md-log", () => {
     expect(live.indexOf("> [!question] Quiz")).toBeLessThan(live.indexOf("After."));
   });
 
+  test("a streamed message whose tool_call fires before message_end logs its question once, in block order", async () => {
+    // omp 18.2.10 runs beforeToolCall (the extension tool_call) before the assistant message_end
+    // (pi-agent-core agent-loop.ts:2031-2064); a streamed message has already had its message_start.
+    writeFileSync(note, "");
+    await run("md-log", note);
+    const mixed = { role: "assistant", content: [
+      { type: "text", text: "Before." },
+      { type: "toolCall", id: "streamed", name: "quiz", arguments: QUIZ_INPUT },
+      { type: "text", text: "After." },
+    ] };
+    await omp.emit("message_start", { type: "message_start", message: { role: "assistant", content: [] } });
+    await omp.emit("tool_call", { type: "tool_call", toolCallId: "streamed", toolName: "quiz", input: QUIZ_INPUT });
+    await say(mixed);
+    expect(read()).toBe(formatLog(backfillFromOmp([mixed])));
+  });
+
+  test("an unstreamed message whose tool_call fires before message_start logs its question once", async () => {
+    // Without a streamed partial, omp pushes message_start after beforeToolCall too (agent-loop.ts:2061-2063).
+    writeFileSync(note, "");
+    await run("md-log", note);
+    const message = { role: "assistant", content: [{ type: "toolCall", id: "unstreamed", name: "quiz", arguments: QUIZ_INPUT }] };
+    await omp.emit("tool_call", { type: "tool_call", toolCallId: "unstreamed", toolName: "quiz", input: QUIZ_INPUT });
+    await omp.emit("message_start", { type: "message_start", message });
+    await say(message);
+    expect(read()).toBe(formatLog(backfillFromOmp([message])));
+  });
+
   test("backfills the conversation so far by overwriting the note", async () => {
     writeFileSync(note, "old content\n");
     omp.branch.push(...OMP_MESSAGES.map(messageEntry));

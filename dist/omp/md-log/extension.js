@@ -350,6 +350,7 @@ function errorText(cause) {
 }
 function restore(state, ctx) {
   state.loggedCalls.clear();
+  state.streaming = false;
   state.link = null;
   for (const entry of ctx.sessionManager.getBranch()) {
     if (entry.type !== "custom" || entry.customType !== ENTRY_TYPE) continue;
@@ -380,14 +381,22 @@ function observe(state, ctx, compute) {
   return state.writes.run(async () => writeFile(file, appendBlocks(await readNote(file), blocks), "utf8")).catch((cause) => ctx.ui.notify(`md-log: ${errorText(cause)}`, "error"));
 }
 function messageEntries(state, message) {
-  if (message.role === "assistant" && Array.isArray(message.content)) {
-    for (const call of message.content.map(asRecord)) {
-      const id = asText(call?.id);
-      if (call?.type === "toolCall" && id && ompToolCallEntries(asText(call.name), call.arguments).length > 0)
-        state.loggedCalls.add(id);
-    }
-  }
-  return backfillFromOmp([message]);
+  if (message.role !== "assistant" || !Array.isArray(message.content)) return backfillFromOmp([message]);
+  const content = message.content.filter((block) => {
+    const call = asRecord(block);
+    const id = asText(call?.id);
+    if (call?.type !== "toolCall" || !id || ompToolCallEntries(asText(call.name), call.arguments).length === 0) return true;
+    if (state.loggedCalls.has(id)) return false;
+    state.loggedCalls.add(id);
+    return true;
+  });
+  return backfillFromOmp([{ ...message, content }]);
+}
+function toolCallEntries(state, event) {
+  if (state.streaming || state.loggedCalls.has(event.toolCallId)) return [];
+  const entries = ompToolCallEntries(event.toolName, event.input);
+  if (entries.length > 0) state.loggedCalls.add(event.toolCallId);
+  return entries;
 }
 async function linkNote(pi, state, args, ctx) {
   const arg = args.trim();
@@ -421,16 +430,26 @@ function unlinkNote(pi, state, ctx) {
   ctx.ui.notify(`Unlinked: ${name}`, "info");
 }
 function mdLog(pi) {
-  const state = { link: null, writes: createSerialQueue(), loggedCalls: /* @__PURE__ */ new Set() };
+  const state = { link: null, writes: createSerialQueue(), streaming: false, loggedCalls: /* @__PURE__ */ new Set() };
   pi.on("session_start", (_event, ctx) => restore(state, ctx));
   pi.on("session_switch", (_event, ctx) => restore(state, ctx));
-  pi.on("message_end", (event, ctx) => observe(state, ctx, () => messageEntries(state, event.message)));
-  pi.on("tool_call", (event, ctx) => observe(state, ctx, () => state.loggedCalls.delete(event.toolCallId) ? [] : ompToolCallEntries(event.toolName, event.input)));
-  pi.on("tool_result", (event, ctx) => observe(state, ctx, () => ompToolResultEntries(event.toolName, event.input, {
-    details: event.details,
-    isError: event.isError,
-    text: contentText(event.content)
-  })));
+  pi.on("message_start", (event) => {
+    if (event.message.role === "assistant") state.streaming = true;
+  });
+  pi.on("message_end", (event, ctx) => {
+    const written = observe(state, ctx, () => messageEntries(state, event.message));
+    if (event.message.role === "assistant") state.streaming = false;
+    return written;
+  });
+  pi.on("tool_call", (event, ctx) => observe(state, ctx, () => toolCallEntries(state, event)));
+  pi.on("tool_result", (event, ctx) => observe(state, ctx, () => {
+    state.loggedCalls.delete(event.toolCallId);
+    return ompToolResultEntries(event.toolName, event.input, {
+      details: event.details,
+      isError: event.isError,
+      text: contentText(event.content)
+    });
+  }));
   pi.registerCommand("md-log", {
     description: "Mirror the session to a markdown file (backfills history)",
     handler: (args, ctx) => linkNote(pi, state, args, ctx)
