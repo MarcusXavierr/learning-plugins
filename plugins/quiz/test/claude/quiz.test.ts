@@ -146,7 +146,7 @@ for (const [name, input, message] of [
     on("tool.call", () => { asked = true; return { deny: "dialog must not open" }; });
     await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" });
     const answer = await $.tool.call({ tool: QUIZ, ...input });
-    expect(answer).toEqual({ result: expect.stringContaining(message), isError: true });
+    expect(answer).toEqual({ deny: expect.stringContaining(message) });
     expect(asked).toBe(false);
   });
 }

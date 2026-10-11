@@ -455,7 +455,7 @@ function register(on) {
       quiz = prepareQuiz(e, CLAUDE_LIMITS);
     } catch (error) {
       if (!(error instanceof QuizInputError)) throw error;
-      return { result: error.message, isError: true };
+      return { deny: error.message };
     }
     if (!interactive) return { result: withBlock(unavailableDetails(quiz, "quiz requires an interactive Claude Code session")) };
     let answer;
@@ -469,7 +469,7 @@ function register(on) {
       return { result: withBlock(cancelledDetails(quiz)) };
     }
     return { result: withBlock(gradeQuiz(quiz, responseFromDialog(quiz, answer))) };
-  }).catch(($, e, next) => ({ result: `quiz failed: ${next.error.message ?? next.error.kind}`, isError: true }));
+  }).catch(($, e, next) => ({ deny: `quiz failed: ${next.error.message ?? next.error.kind}` }));
   on("ui.render", { component: "ToolResult" }, async ($, e, next) => {
     if (e.props.tool !== "mcp__quiz__quiz" || e.props.isErrored) return next(e);
     const details = quizDetailsFromOutput(e.props.output);

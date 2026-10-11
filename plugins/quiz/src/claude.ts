@@ -40,7 +40,7 @@ export function register(on: On): void {
       quiz = prepareQuiz(e, CLAUDE_LIMITS);
     } catch (error) {
       if (!(error instanceof QuizInputError)) throw error;
-      return { result: error.message, isError: true as const };
+      return { deny: error.message };
     }
     if (!interactive) return { result: withBlock(unavailableDetails(quiz, "quiz requires an interactive Claude Code session")) };
 
@@ -56,7 +56,7 @@ export function register(on: On): void {
       return { result: withBlock(cancelledDetails(quiz)) };
     }
     return { result: withBlock(gradeQuiz(quiz, responseFromDialog(quiz, answer))) };
-  }).catch(($, e, next) => ({ result: `quiz failed: ${next.error.message ?? next.error.kind}`, isError: true as const }));
+  }).catch(($, e, next) => ({ deny: `quiz failed: ${next.error.message ?? next.error.kind}` }));
   // Draw feedback at the result row, without exposing the structured block to the user.
   on("ui.render", { component: "ToolResult" }, async ($, e, next) => {
     if (e.props.tool !== "mcp__quiz__quiz" || e.props.isErrored) return next(e);
