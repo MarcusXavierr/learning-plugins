@@ -301,7 +301,7 @@ for open questions use {{tool:ask}}.
 ## Error handling
 
 - **Observers** (md-log hooks) never break the session. In CC they catch, report via `$.ui.toast`, and always pass through `next(e)`. In omp they catch and `ctx.ui.notify`.
-- **Tool handlers** return model-readable errors: error text content in omp, `{result: '<message>', isError: true}` in CC. Every gating CC hook has a `.catch`, enforced by `validate --strict`.
+- **Tool handlers** return model-readable errors: error text content in omp, `{deny: '<message>'}` in CC. Only a deny sets `is_error` on the real `tool_result`: the quiz smoke saw `{result, isError: true}` reach the model as a normal result, and the visual-tools smoke saw every deny arrive with `is_error: true`. Every gating CC hook has a `.catch`, enforced by `validate --strict`.
 - **Bad tool input** is a hard error with an actionable message, never a silent fallback. Examples: a quiz `correctAnswer` matching no option, too many options for CC, a comma in a CC multi-select label, an edit target not matching exactly once.
 - **Render failures** return the renderer's stderr tail so the maker agent can fix its source, as today.
 - **Lazy install failure** returns the exact manual command, and the next render retries the install.
@@ -380,4 +380,4 @@ From the skeleton (Phase 1), Claude Code 2.1.296, omp 18.2.10:
 | 2 | What props does the CC `ToolUse` render site receive (is the tool result available) to draw quiz feedback? | quiz |
 | 3 | What is the exact `tool_result` `details` of omp's native `ask`? Capture it from a real session before writing md-log's mapping. | md-log |
 | 4 | Does CC's `ToolUseSummary.result` (from `$.session.messages()`) hold the quiz `result` array and `AskUserQuestion`'s `{answers}` as returned? The skeleton's `hello` plugin captures both. | answered (Verified facts, skeleton) |
-| 5 | How big is the renderer install, and how long does the first `npm ci` take? | visual-tools |
+| 5 | Renderer install: 456 MB on disk (+95 MB npm download cache), first `npm ci` 7.7 s from an empty npm cache and empty renderer cache (the whole first `render.js` call, SVG render included; an earlier planning run on the same machine took 41 s, so download speed dominates), 6.5–9.5 s with a warm npm cache, on an i5-1135G7 laptop (Fedora 39, Node 24.15.0). Later renders: SVG ~0.3 s, Mermaid ~1–3 s (Chrome start). A first maker session that installs took 24 s (CC) / 28 s (omp) end to end. | resolved in Phase 4 |
