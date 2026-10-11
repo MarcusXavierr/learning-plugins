@@ -10,7 +10,7 @@ import {
 export const DONT_KNOW_LABEL = "I don't know";
 
 /** Bad tool input. The message is written for the model: it names the problem and the fix. */
-class QuizInputError extends Error {}
+export class QuizInputError extends Error {}
 
 /** Extra rules for a host whose dialog returns the chosen option *labels* (Claude Code's `$.ui.ask`). */
 export interface QuizLimits {

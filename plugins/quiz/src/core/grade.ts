@@ -45,6 +45,19 @@ export function cancelledDetails(quiz: PreparedQuiz): QuizResultDetails {
 }
 
 
+export function unavailableDetails(quiz: PreparedQuiz, message: string): QuizResultDetails {
+  return {
+    status: "unavailable",
+    question: quiz.question,
+    ...(quiz.context ? { context: quiz.context } : {}),
+    mode: quiz.mode,
+    answers: [],
+    correctIndices: quiz.correctIndices,
+    message,
+  };
+}
+
+
 /** The text the model reads. Wording ported from quiz.ts:264-313. */
 export function quizResultText(d: QuizResultDetails): string {
   if (d.status !== "answered") return d.message ?? `quiz ${d.status}`;
