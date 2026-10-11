@@ -10,7 +10,7 @@ const QUIZ = toolName("quiz", "omp");
 const ASK = toolName("ask", "omp");
 
 /** The parts of an omp `AgentMessage` md-log reads (`@oh-my-pi/pi-ai` types.d.ts:760-903). */
-interface OmpMessage {
+export interface OmpMessage {
   readonly role: string;
   readonly content?: unknown;
   readonly toolCallId?: unknown;
