@@ -150,3 +150,30 @@ for (const [name, input, message] of [
     expect(asked).toBe(false);
   });
 }
+
+const TOOL_RESULT = { plugin: "quiz", surface: "terminal", component: "ToolResult" } as const;
+
+test("the transcript shows the graded options and verdict, not the raw result block", async ($, on) => {
+  stubSession(on);
+  on("tool.call", ($, e) => ({ result: { answers: { [dialogOf(e).question]: "Venus" } } }));
+  on("ui.render", () => ({ type: "Text", props: {}, children: ["drawn by Claude Code"] }));
+  await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" });
+  const { result } = await $.tool.call({ tool: QUIZ, ...planets });
+  const ui = await $.ui.mount({
+    ...TOOL_RESULT,
+    props: { tool_use_id: "toolu_1", tool: QUIZ, output: result, isErrored: false },
+  });
+  expect(await ui.find({ type: "Text", text: /^✗ \d\. Venus$/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /^✓ \d\. Mercury$/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "Incorrect" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /quiz-result/ })).toBeUndefined();
+});
+
+test("other tools' results are drawn as Claude Code draws them", async ($, on) => {
+  on("ui.render", () => ({ type: "Text", props: {}, children: ["drawn by Claude Code"] }));
+  const ui = await $.ui.mount({
+    ...TOOL_RESULT,
+    props: { tool_use_id: "toolu_2", tool: "Bash", output: "<quiz-result>{}</quiz-result>", isErrored: false },
+  });
+  expect(await ui.find({ type: "Text", text: "drawn by Claude Code" })).toBeDefined();
+});

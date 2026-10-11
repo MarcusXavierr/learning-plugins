@@ -74,10 +74,26 @@ var FIELD_CHECKS = {
   explanation: optionalString,
   message: optionalString
 };
+function isQuizResultDetails(value) {
+  return isJsonObject(value) && Object.entries(FIELD_CHECKS).every(([field, check]) => check(value[field]));
+}
 var OPEN = "<quiz-result>";
 var CLOSE = "</quiz-result>";
 function encodeQuizResult(d) {
   return `${OPEN}${JSON.stringify(d).replace(/</g, "\\u003c")}${CLOSE}`;
+}
+function decodeQuizResult(text) {
+  const start = text.indexOf(OPEN);
+  if (start < 0) return void 0;
+  const end = text.indexOf(CLOSE, start + OPEN.length);
+  if (end < 0) return void 0;
+  let parsed;
+  try {
+    parsed = JSON.parse(text.slice(start + OPEN.length, end));
+  } catch {
+    return void 0;
+  }
+  return isQuizResultDetails(parsed) ? parsed : void 0;
 }
 
 // plugins/quiz/src/core/prepare.ts
@@ -287,6 +303,37 @@ User's note: ${d.note}`;
 Explanation: ${d.explanation}`;
   return text;
 }
+function feedbackRows(d) {
+  const picked = new Set(d.answers.map((a) => a.index));
+  const key = new Set(d.correctIndices);
+  const shown = d.options ?? d.answers.map((a) => ({ index: a.index, label: a.label }));
+  return shown.map(({ index, label }) => {
+    if (key.has(index)) return { index, label, mark: "✓", tone: "success" };
+    if (picked.has(index)) return { index, label, mark: "✗", tone: "error" };
+    return { index, label, mark: " ", tone: "dim" };
+  });
+}
+function resultLines(d) {
+  if (d.status !== "answered") return [{ text: d.message ?? `quiz ${d.status}`, tone: "warning" }];
+  const lines = feedbackRows(d).map((r) => ({ text: `${r.mark} ${r.index}. ${r.label}`, tone: r.tone }));
+  lines.push({ text: "", tone: "dim" });
+  if (d.dontKnow) lines.push({ text: "I don't know", tone: "warning" });
+  else if (d.correct) lines.push({ text: "Correct!", tone: "success" });
+  else lines.push({ text: "Incorrect", tone: "error" });
+  if (d.note) lines.push({ text: `Note: ${d.note}`, tone: "muted" });
+  if (d.explanation) lines.push({ text: d.explanation, tone: "muted" });
+  return lines;
+}
+
+// plugins/quiz/src/core/output.ts
+function quizDetailsFromOutput(output) {
+  if (typeof output === "string") return decodeQuizResult(output);
+  if (!Array.isArray(output)) return void 0;
+  const text = output.map(
+    (block) => typeof block === "object" && block !== null && "text" in block && typeof block.text === "string" ? block.text : ""
+  ).join("\n");
+  return decodeQuizResult(text);
+}
 
 // shared/tool-map.ts
 var TOOLS = {
@@ -378,6 +425,13 @@ function quizInputSchema(harness) {
 }
 
 // plugins/quiz/src/claude.ts
+var INK = {
+  success: { color: "green" },
+  error: { color: "red" },
+  warning: { color: "yellow" },
+  muted: { dimColor: true },
+  dim: { dimColor: true }
+};
 var interactive = false;
 function withBlock(details) {
   return `${quizResultText(details)}
@@ -416,6 +470,16 @@ function register(on) {
     }
     return { result: withBlock(gradeQuiz(quiz, responseFromDialog(quiz, answer))) };
   }).catch(($, e, next) => ({ result: `quiz failed: ${next.error.message ?? next.error.kind}`, isError: true }));
+  on("ui.render", { component: "ToolResult" }, async ($, e, next) => {
+    if (e.props.tool !== "mcp__quiz__quiz" || e.props.isErrored) return next(e);
+    const details = quizDetailsFromOutput(e.props.output);
+    if (!details) return next(e);
+    const { Box, Text } = $.ui.resolve(e);
+    return Box({
+      flexDirection: "column",
+      children: resultLines(details).map((line) => Text({ ...INK[line.tone], children: [line.text === "" ? " " : line.text] }))
+    });
+  });
 }
 export {
   register

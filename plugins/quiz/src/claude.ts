@@ -1,9 +1,18 @@
 import type { On } from "claude-code";
 import { encodeQuizResult, type QuizResultDetails } from "../../../shared/quiz-contract.ts";
 import { dialogLabels, dialogQuestion, responseFromDialog } from "./core/dialog.ts";
-import { cancelledDetails, gradeQuiz, quizResultText, unavailableDetails } from "./core/grade.ts";
+import { cancelledDetails, gradeQuiz, quizResultText, resultLines, unavailableDetails, type StyledLine } from "./core/grade.ts";
+import { quizDetailsFromOutput } from "./core/output.ts";
 import { CLAUDE_LIMITS, prepareQuiz, QuizInputError, type PreparedQuiz } from "./core/prepare.ts";
 import { quizDescription, quizInputSchema } from "./core/schema.ts";
+
+const INK: Record<StyledLine["tone"], { color?: string; dimColor?: boolean }> = {
+  success: { color: "green" },
+  error: { color: "red" },
+  warning: { color: "yellow" },
+  muted: { dimColor: true },
+  dim: { dimColor: true },
+};
 
 // session.start runs before the first prompt and after reloads.
 let interactive = false;
@@ -48,4 +57,15 @@ export function register(on: On): void {
     }
     return { result: withBlock(gradeQuiz(quiz, responseFromDialog(quiz, answer))) };
   }).catch(($, e, next) => ({ result: `quiz failed: ${next.error.message ?? next.error.kind}`, isError: true as const }));
+  // Draw feedback at the result row, without exposing the structured block to the user.
+  on("ui.render", { component: "ToolResult" }, async ($, e, next) => {
+    if (e.props.tool !== "mcp__quiz__quiz" || e.props.isErrored) return next(e);
+    const details = quizDetailsFromOutput(e.props.output);
+    if (!details) return next(e);
+    const { Box, Text } = $.ui.resolve(e);
+    return Box({
+      flexDirection: "column",
+      children: resultLines(details).map((line) => Text({ ...INK[line.tone], children: [line.text === "" ? " " : line.text] })),
+    });
+  });
 }
