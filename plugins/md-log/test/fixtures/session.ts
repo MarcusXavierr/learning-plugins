@@ -3,11 +3,11 @@ import type { ClaudeMessage } from "../../src/core/from-claude.ts";
 import type { OmpMessage } from "../../src/core/from-omp.ts";
 
 /** One teaching exchange, recorded once per harness. Both must log as golden/session.md. */
-const PROMPT =
+export const PROMPT =
   '<skill name="teach" location="/skills/teach/SKILL.md">\nWhole skill text.\n</skill>\n\nTeach me what makes a number prime.';
-const PROSE_1 = "A prime has exactly two divisors: 1 and itself.\n\nQuick check:";
-const PROSE_2 = "Right. Now a preference question.";
-const PROSE_3 = "Slow it is. Next lesson: factor trees.";
+export const PROSE_1 = "A prime has exactly two divisors: 1 and itself.\n\nQuick check:";
+export const PROSE_2 = "Right. Now a preference question.";
+export const PROSE_3 = "Slow it is. Next lesson: factor trees.";
 
 export const QUIZ_INPUT = {
   question: "Which of these is prime?",
@@ -32,10 +32,10 @@ export const QUIZ_DETAILS: QuizResultDetails = {
 };
 
 const QUESTION = "How fast should we go?";
-const OMP_ASK_INPUT = {
+export const OMP_ASK_INPUT = {
   questions: [{ id: "pace", question: QUESTION, header: "Pace", options: [{ label: "Slow" }, { label: "Fast" }] }],
 };
-const OMP_ASK_DETAILS = { question: QUESTION, options: ["Slow", "Fast"], multi: false, selectedOptions: ["Slow"] };
+export const OMP_ASK_DETAILS = { question: QUESTION, options: ["Slow", "Fast"], multi: false, selectedOptions: ["Slow"] };
 const CLAUDE_ASK_INPUT = {
   questions: [{
     question: QUESTION,

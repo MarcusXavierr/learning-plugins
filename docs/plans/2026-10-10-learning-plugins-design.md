@@ -147,11 +147,16 @@ Abstract tool and agent ids resolve per harness. The prompt generator and md-log
 
 **omp adapter**
 
-- Registers commands with `pi.registerCommand` and persists the link with `pi.appendEntry`, restored on `session_start` and `session_switch` (`/new`, `/resume`, and fork emit `session_switch`; `session_start` fires once at startup).
+- Registers commands with `pi.registerCommand` and persists the link with `pi.appendEntry`, restored on `session_start` and `session_switch` from the newest md-log entry on the active branch (`/new`, `/resume`, and fork emit `session_switch`; `session_start` fires once at startup).
 - User and assistant text come from `message_end`.
 - **Q&A**:
-  - The question is written on `tool_call` for `quiz` (order from the quiz contract) and for the native `ask` (input `questions[]`: `{id, question, header?, options[{label, description?}], multi?, recommended?}`, from `@oh-my-pi/pi-coding-agent@18.2.10` `tools/ask.d.ts`).
-  - The answer is written on `tool_result` (quiz `details`; native `ask` details, whose shape lives in `@oh-my-pi/pi-tui` and is captured in md-log's first task).
+  - The question is written for `quiz` (order from the quiz contract) and for the native `ask` (input `questions[]`: `{id, question, header?, options[{label, description?, preview?}], multi?, recommended?}`, from `@oh-my-pi/pi-coding-agent@18.2.10` `tools/ask.d.ts`). omp ends an assistant message before running its tools, so `message_end` writes prose and questions in content-block order; `tool_call` is the fallback for a call no completed message covered.
+  - The answer is written on `tool_result`: quiz `details`; native `ask` `details` (`AskToolDetails`, `@oh-my-pi/pi-tui@18.2.10` `tools/ask.d.ts`), filled by pi-coding-agent `src/tools/ask.ts` as:
+    - one question: `{question, options: string[], multi, selectedOptions: string[], customInput?, note?, timedOut?}`; a typed "Other" answer sets `customInput` and leaves `selectedOptions` empty.
+    - several questions: `{results: QuestionResult[]}`, each with the same fields plus `id`.
+    - "Chat about this": `{chatRedirect: true, questions: string[]}`.
+    - cancel, Esc, headless: the tool throws; `tool_result` has `details: undefined`, `isError: true`, and the error message as content.
+    - bad input: `details: {}` and an `Error: …` text, not flagged as an error.
   - omp events broadcast to every extension, so hook order between plugins does not matter.
 - Writes read, concatenate, and write the file (as today) under the queue.
 

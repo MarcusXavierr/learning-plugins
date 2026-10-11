@@ -69,4 +69,6 @@ export default defineConfig([
   { files: ["build/prompts.ts"], rules: { complexity: ["error", { max: 37 }], "max-lines-per-function": ["error", { max: 80, skipBlankLines: true, skipComments: true, IIFEs: true }] } },
   // The md-log entry model is the shared vocabulary both harness mappings (from-omp, from-claude) build entries from.
   { files: ["plugins/md-log/src/core/entries.ts"], rules: { "local/max-exports": ["error", { max: 8 }] } },
+  // The scripted session's parts (prompt, prose, quiz, ask, both transcripts) are shared by the parity and adapter tests.
+  { files: ["plugins/md-log/test/fixtures/session.ts"], rules: { "local/max-exports": ["error", { max: 11 }] } },
 ]);

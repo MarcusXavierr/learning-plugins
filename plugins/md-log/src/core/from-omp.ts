@@ -21,7 +21,7 @@ export interface OmpMessage {
 
 /** Text blocks of a message content (`string | (TextContent | …)[]`), joined with newlines. */
 // eslint-disable-next-line llm-core/no-unknown-parameters -- decodes untrusted omp message content.
-function contentText(content: unknown): string {
+export function contentText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content.map(asRecord).filter((c) => c?.type === "text").map((c) => asText(c?.text)).join("\n");
