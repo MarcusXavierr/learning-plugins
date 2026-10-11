@@ -62,6 +62,8 @@ export default defineConfig([
       "llm-core/no-type-system-bypass": "off",
     },
   },
+  // Quiz input parsing and resolving are cohesive validation boundaries with independent field checks.
+  { files: ["plugins/quiz/src/core/prepare.ts"], rules: { complexity: ["error", { max: 21 }] } },
   // Per-file threshold exceptions go below, one block per file, each with a comment saying why.
   // Manifest shape/path validation is one cohesive trust-boundary operation.
   { files: ["build/plugin-source.ts"], rules: { complexity: ["error", { max: 23 }] } },

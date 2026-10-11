@@ -10,6 +10,12 @@
       "source": "./dist/claude/md-log",
       "description": "Mirror the session (prompts, prose, quiz and question answers) into a markdown note.",
       "version": "0.1.0"
+    },
+    {
+      "name": "quiz",
+      "source": "./dist/claude/quiz",
+      "description": "Graded multiple-choice quiz tool: shuffled options, I don't know, a free-text note, and ✓/✗ feedback with an explanation.",
+      "version": "0.1.0"
     }
   ]
 }

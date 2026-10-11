@@ -1,0 +1,7 @@
+{
+  "name": "@learning-plugins/quiz",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Graded multiple-choice quiz tool: shuffled options, I don't know, a free-text note, and ✓/✗ feedback with an explanation."
+}
