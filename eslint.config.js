@@ -79,4 +79,6 @@ export default defineConfig([
   { files: ["plugins/md-log/src/core/entries.ts"], rules: { "local/max-exports": ["error", { max: 8 }] } },
   // The scripted session's parts (prompt, prose, quiz, ask, both transcripts) are shared by the parity and adapter tests.
   { files: ["plugins/md-log/test/fixtures/session.ts"], rules: { "local/max-exports": ["error", { max: 11 }] } },
+  // The omp tool execute signature is fixed by ExtensionAPI with five positional arguments.
+  { files: ["plugins/visual-tools/src/omp.ts"], rules: { "llm-core/max-params": ["error", { max: 3, maxInternal: 5, maxConstructor: 5 }] } },
 ]);
