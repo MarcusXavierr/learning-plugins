@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { cancelledDetails, gradeQuiz, quizResultText } from "../src/core/grade.ts";
+import { cancelledDetails, feedbackRows, gradeQuiz, quizResultText, resultLines } from "../src/core/grade.ts";
 import { prepareQuiz } from "../src/core/prepare.ts";
 
 const single = prepareQuiz({
@@ -69,5 +69,31 @@ describe("gradeQuiz", () => {
 
   test("reports a cancelled quiz to the model in plain words", () => {
     expect(quizResultText(cancelledDetails(single))).toBe("User cancelled the quiz");
+  });
+});
+
+describe("feedback", () => {
+  test("marks a wrong pick ✗ and every correct option ✓, including the one the user missed", () => {
+    const d = gradeQuiz(primes, { dontKnow: false, answers: pick(primes, 1, 3) });
+    expect(feedbackRows(d).map((r) => `${r.mark}:${r.tone}`)).toEqual(["✓:success", "✓:success", "✗:error"]);
+  });
+
+  test("after I don't know, shows only the correct answers and no ✗", () => {
+    const d = gradeQuiz(single, { dontKnow: true, answers: [] });
+    expect(feedbackRows(d).map((r) => r.mark)).toEqual(["✓", " ", " "]);
+  });
+
+  test("summarises the outcome under the marked options, then the note and explanation", () => {
+    const d = gradeQuiz(single, { dontKnow: false, note: "close one", answers: pick(single, 2) });
+    expect(resultLines(d).slice(3)).toEqual([
+      { text: "", tone: "dim" },
+      { text: "Incorrect", tone: "error" },
+      { text: "Note: close one", tone: "muted" },
+      { text: "Mercury orbits at about 0.39 AU.", tone: "muted" },
+    ]);
+  });
+
+  test("summarises a cancelled quiz as one warning line", () => {
+    expect(resultLines(cancelledDetails(single))).toEqual([{ text: "User cancelled the quiz", tone: "warning" }]);
   });
 });

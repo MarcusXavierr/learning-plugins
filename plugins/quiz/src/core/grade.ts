@@ -57,3 +57,45 @@ export function quizResultText(d: QuizResultDetails): string {
   if (d.explanation) text += `\nExplanation: ${d.explanation}`;
   return text;
 }
+
+export type FeedbackTone = "success" | "error" | "dim";
+export interface FeedbackRow {
+  index: number;
+  label: string;
+  mark: "✓" | "✗" | " ";
+  tone: FeedbackTone;
+}
+
+/**
+ * One row per displayed option, marked for the user: ✓ on every correct option,
+ * ✗ on a wrong pick. After "I don't know" there are no picks, so nothing is ✗.
+ */
+export function feedbackRows(d: QuizResultDetails): FeedbackRow[] {
+  const picked = new Set(d.answers.map((a) => a.index));
+  const key = new Set(d.correctIndices);
+  const shown = d.options ?? d.answers.map((a) => ({ index: a.index, label: a.label }));
+  return shown.map(({ index, label }) => {
+    if (key.has(index)) return { index, label, mark: "✓", tone: "success" };
+    if (picked.has(index)) return { index, label, mark: "✗", tone: "error" };
+    return { index, label, mark: " ", tone: "dim" };
+  });
+}
+
+export type LineTone = FeedbackTone | "warning" | "muted";
+export interface StyledLine {
+  text: string;
+  tone: LineTone;
+}
+
+/** The transcript summary of a finished quiz: omp's renderResult and CC's ToolResult row both draw it. */
+export function resultLines(d: QuizResultDetails): StyledLine[] {
+  if (d.status !== "answered") return [{ text: d.message ?? `quiz ${d.status}`, tone: "warning" }];
+  const lines: StyledLine[] = feedbackRows(d).map((r) => ({ text: `${r.mark} ${r.index}. ${r.label}`, tone: r.tone }));
+  lines.push({ text: "", tone: "dim" });
+  if (d.dontKnow) lines.push({ text: "I don't know", tone: "warning" });
+  else if (d.correct) lines.push({ text: "Correct!", tone: "success" });
+  else lines.push({ text: "Incorrect", tone: "error" });
+  if (d.note) lines.push({ text: `Note: ${d.note}`, tone: "muted" });
+  if (d.explanation) lines.push({ text: d.explanation, tone: "muted" });
+  return lines;
+}
