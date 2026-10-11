@@ -66,6 +66,8 @@ export default defineConfig([
   { files: ["plugins/quiz/src/core/prepare.ts"], rules: { complexity: ["error", { max: 21 }] } },
   // Quiz key handling is one cohesive state transition function across selection, note, and feedback.
   { files: ["plugins/quiz/src/core/reducer.ts"], rules: { complexity: ["error", { max: 25 }] } },
+  // Dialog rendering is one cohesive width-aware view of selection and feedback, with host theme/text kit inputs.
+  { files: ["plugins/quiz/src/omp/tui.ts"], rules: { complexity: ["error", { max: 23 }], "max-lines-per-function": ["error", { max: 85, skipBlankLines: true, skipComments: true, IIFEs: true }], "llm-core/max-params": ["error", { max: 4, maxInternal: 4, maxConstructor: 5 }] } },
   // Per-file threshold exceptions go below, one block per file, each with a comment saying why.
   // Manifest shape/path validation is one cohesive trust-boundary operation.
   { files: ["build/plugin-source.ts"], rules: { complexity: ["error", { max: 23 }] } },

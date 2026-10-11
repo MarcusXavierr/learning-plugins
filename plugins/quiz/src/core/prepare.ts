@@ -7,7 +7,7 @@ import {
 } from "../../../../shared/quiz-contract.ts";
 
 /** The always-added choice that signals a genuine gap instead of a guess. Never a real option. */
-const DONT_KNOW_LABEL = "I don't know";
+export const DONT_KNOW_LABEL = "I don't know";
 
 /** Bad tool input. The message is written for the model: it names the problem and the fix. */
 class QuizInputError extends Error {}
