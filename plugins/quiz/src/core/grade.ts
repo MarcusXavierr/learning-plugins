@@ -58,7 +58,7 @@ export function quizResultText(d: QuizResultDetails): string {
   return text;
 }
 
-export type FeedbackTone = "success" | "error" | "dim";
+type FeedbackTone = "success" | "error" | "dim";
 export interface FeedbackRow {
   index: number;
   label: string;
@@ -81,7 +81,7 @@ export function feedbackRows(d: QuizResultDetails): FeedbackRow[] {
   });
 }
 
-export type LineTone = FeedbackTone | "warning" | "muted";
+type LineTone = FeedbackTone | "warning" | "muted";
 export interface StyledLine {
   text: string;
   tone: LineTone;
