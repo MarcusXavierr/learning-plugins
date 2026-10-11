@@ -1,0 +1,21 @@
+{
+  "name": "learning-plugins",
+  "description": "Learning workflow plugins for Oh My Pi and Claude Code, built from one source tree.",
+  "owner": {
+    "name": "Marcus Xavier"
+  },
+  "plugins": [
+    {
+      "name": "alpha",
+      "source": "./dist/claude/alpha",
+      "description": "Alpha fixture: both adapters, an extra bundle and a copied file.",
+      "version": "1.2.3"
+    },
+    {
+      "name": "beta",
+      "source": "./dist/claude/beta",
+      "description": "Beta fixture: prompts only, depends on alpha.",
+      "version": "0.0.1"
+    }
+  ]
+}
