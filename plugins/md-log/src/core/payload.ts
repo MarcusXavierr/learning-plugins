@@ -12,3 +12,9 @@ export function asRecord(value: unknown): Payload | undefined {
 export function asText(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
+
+/** A payload field as a flag: only a literal `true` counts. */
+// eslint-disable-next-line llm-core/no-unknown-parameters -- decodes untrusted host payloads and tool inputs.
+export function asFlag(value: unknown): boolean {
+  return typeof value === "boolean" && value;
+}

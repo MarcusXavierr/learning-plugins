@@ -67,4 +67,6 @@ export default defineConfig([
   { files: ["build/plugin-source.ts"], rules: { complexity: ["error", { max: 23 }] } },
   // Prompt validation and expansion form one cohesive rendering algorithm.
   { files: ["build/prompts.ts"], rules: { complexity: ["error", { max: 37 }], "max-lines-per-function": ["error", { max: 80, skipBlankLines: true, skipComments: true, IIFEs: true }] } },
+  // The md-log entry model is the shared vocabulary both harness mappings (from-omp, from-claude) build entries from.
+  { files: ["plugins/md-log/src/core/entries.ts"], rules: { "local/max-exports": ["error", { max: 8 }] } },
 ]);
