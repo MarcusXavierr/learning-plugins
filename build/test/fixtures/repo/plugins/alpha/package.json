@@ -1,0 +1,11 @@
+{
+  "name": "@learning-plugins/alpha",
+  "version": "1.2.3",
+  "private": true,
+  "type": "module",
+  "description": "Alpha fixture: both adapters, an extra bundle and a copied file.",
+  "plugin": {
+    "extraBundles": [{ "entry": "src/tool/cli.ts", "out": "tool/cli.js", "platform": "node" }],
+    "copy": ["tool/data.txt"]
+  }
+}
