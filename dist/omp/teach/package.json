@@ -1,0 +1,6 @@
+{
+  "name": "@learning-plugins/teach",
+  "version": "0.1.0",
+  "description": "A teaching skill that builds understanding from first principles and checks every step with a quiz, plus a researcher agent that fact-checks on the web.",
+  "type": "module"
+}

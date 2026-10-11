@@ -25,6 +25,7 @@ export const TOOLS: Record<string, Record<Harness, string>> = {
 export const AGENTS: Record<string, Record<Harness, string>> = {
   "visual-tools/mermaid-maker": { omp: "mermaid-maker", claude: "visual-tools:mermaid-maker" },
   "visual-tools/svg-maker": { omp: "svg-maker", claude: "visual-tools:svg-maker" },
+  "teach/researcher": { omp: "researcher", claude: "teach:researcher" },
 };
 
 function lookup(map: Record<string, Record<Harness, string>>, kind: string, id: string, h: Harness): string {

@@ -1,0 +1,10 @@
+{
+  "name": "@learning-plugins/teach",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A teaching skill that builds understanding from first principles and checks every step with a quiz, plus a researcher agent that fact-checks on the web.",
+  "plugin": {
+    "dependencies": ["quiz", "md-log"]
+  }
+}
