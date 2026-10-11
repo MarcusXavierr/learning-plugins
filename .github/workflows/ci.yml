@@ -1,0 +1,27 @@
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    env:
+      DISABLE_AUTOUPDATER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install Claude Code (pinned to the vendored types' version)
+        run: npm install --global @anthropic-ai/claude-code@2.1.296
+      - run: claude --version
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run structure
+      - run: npm test
+      - run: npm run check
+      - run: npm run validate
+      - run: npm run test:claude
