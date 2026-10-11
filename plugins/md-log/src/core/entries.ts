@@ -2,7 +2,7 @@ import { displayOrder, type QuizResultDetails, type RawQuizOption } from "../../
 import { asFlag, asRecord, asText } from "./payload.ts";
 
 /** One answered line: a chosen option (1-based, as shown) or text the user typed instead. */
-type AskAnswerItem =
+export type AskAnswerItem =
   | { kind: "option"; index: number; label: string }
   | { kind: "other"; text: string };
 
@@ -83,7 +83,7 @@ export function quizAnswerEntry(details: QuizResultDetails | undefined, fallback
 }
 
 /** One native-ask question as both harnesses phrase it (omp `ask`, CC `AskUserQuestion`). */
-interface AskQuestion { question: string; header?: string; options: string[]; multi: boolean }
+export interface AskQuestion { question: string; header?: string; options: string[]; multi: boolean }
 
 // eslint-disable-next-line llm-core/no-unknown-parameters -- decodes the untrusted native-ask tool input.
 export function askQuestions(input: unknown): AskQuestion[] {
