@@ -39,6 +39,7 @@ There is one source of truth per plugin. One deterministic build writes two comp
 learning-plugins/
 ├── .claude-plugin/marketplace.json   # GENERATED CC catalog   → ./dist/claude/<plugin>
 ├── .omp-plugin/marketplace.json      # GENERATED omp catalog  → ./dist/omp/<plugin>
+├── .omp/agents/.gitkeep             # shields ../.omp/agents (open question 1)
 ├── package.json, package-lock.json   # npm workspaces, scripts, pinned dev deps
 ├── tsconfig.json
 ├── vitest.config.ts
@@ -356,12 +357,22 @@ From docs and types:
   - omp has no inter-plugin dependencies.
   - omp prefers `.omp-plugin/marketplace.json` over `.claude-plugin/marketplace.json`.
 
+From the skeleton (Phase 1), Claude Code 2.1.296, omp 18.2.10:
+
+- **Vendored CC types**: `types/claude-code/` holds `claude-code/index.d.ts` and `claude-code-tools/index.d.ts` as written by Claude Code 2.1.296 on an interactive `--plugin-dir` load (`// Written by Claude Code 2.1.296.`). CC also writes `claude-code-mcp/` (not vendored: machine-specific) and a root `tsconfig.json` into that plugin dir; both are ignored by git and by `npm run check`.
+- **CC marketplace**: `validate --strict` requires a top-level `description` and rejects a marketplace with no plugins.
+- **CC test kit**: `$.command.run` takes the whole `CommandRunInput` (`origin`, `presentation`); `claude plugin validate` and `claude plugin test` need no login.
+- **omp**: extension tools default to `loadMode: "discoverable"` (`xd://` devices); `"essential"` keeps them top-level. A plain JSON Schema is accepted as `parameters`. With `hello` installed from the user-scope local marketplace, `/hello Ada` notified `Hello, Ada!`, `/tools` listed `hello_image` but none of the old tools, and the model called `hello_image` and answered `Red (#FF0000)`. Linking the built plugin also made `/hello Ada` work in a new session.
+- **Open question 1**: omp reads project config only from `<cwd>/.omp`, so `../.omp/config.yml` does not load inside `learning-plugins/` (`omp config get extensions` and `skills.customDirectories` both returned `[]`; no old tools appeared in `/tools`). Agent discovery walks every ancestor: before shielding, `/agents` listed `researcher`, `mermaid-maker`, and `svg-maker` as project agents; after committing `.omp/agents/.gitkeep`, a new session's `/agents` search for `mermaid-maker` found none. Never use `--scope project` here.
+- **Open question 4**: `$.session.messages()` returns a mod tool's `ToolUseSummary.result` array as returned (the text and base64 image blocks), and `AskUserQuestion`'s `result.answers` maps the question text to the chosen label (probe: `/tmp/hello-smoke/hello-probe.json`, `"Which colour do you prefer?": "Blue"`).
+- **CC adapter lint**: `eslint.config.js` scopes `@typescript-eslint/no-misused-promises` with `checksVoidReturn.arguments: false` to CC adapter files because the rule hangs on CC 2.1.296's `On` overloads.
+
 ## Open questions
 
 | # | Question | Resolve in |
 |---|---|---|
-| 1 | Does omp, started inside `learning-plugins/`, also load `../.omp/config.yml`? If so, old and new tools collide (`quiz` twice). | skeleton |
+| 1 | Does omp, started inside `learning-plugins/`, also load `../.omp/config.yml`? If so, old and new tools collide (`quiz` twice). | answered (Verified facts, skeleton) |
 | 2 | What props does the CC `ToolUse` render site receive (is the tool result available) to draw quiz feedback? | quiz |
 | 3 | What is the exact `tool_result` `details` of omp's native `ask`? Capture it from a real session before writing md-log's mapping. | md-log |
-| 4 | Does CC's `ToolUseSummary.result` (from `$.session.messages()`) hold the quiz `result` array and `AskUserQuestion`'s `{answers}` as returned? The skeleton's `hello` plugin captures both. | skeleton |
+| 4 | Does CC's `ToolUseSummary.result` (from `$.session.messages()`) hold the quiz `result` array and `AskUserQuestion`'s `{answers}` as returned? The skeleton's `hello` plugin captures both. | answered (Verified facts, skeleton) |
 | 5 | How big is the renderer install, and how long does the first `npm ci` take? | visual-tools |
