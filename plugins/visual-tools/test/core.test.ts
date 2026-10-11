@@ -1,8 +1,9 @@
 import { describe, expect, test } from "vitest";
 import { applyEdit, EditError } from "../src/core/edit.ts";
 import { planRender, publishName } from "../src/core/publish.ts";
+import { cacheRoot, installPaths, renderTimeoutMs } from "../src/core/install.ts";
 import { SourceError, SourceStore } from "../src/core/sources.ts";
-
+import { parseRenderArgs, renderArgv, stderrTail, UsageError } from "../src/core/protocol.ts";
 
 /** Deterministic stand-in for Math.random: yields the given values in a cycle. */
 const seq = (...values: number[]) => {
@@ -114,6 +115,60 @@ describe("planRender", () => {
 
   test("a blank save_as is a preview", () => {
     expect(planRender({ ...base, kind: "svg", saveAs: "  " }).published).toBeUndefined();
+  });
+});
+
+describe("render protocol", () => {
+  const req = { kind: "svg", input: "/tmp/a.svg", output: "/tmp/a.png" } as const;
+
+  test("parseRenderArgs inverts renderArgv", () => {
+    expect(parseRenderArgs(renderArgv("node", "/p/renderer/render.js", req).slice(2))).toEqual(req);
+  });
+
+  test.each([
+    [["--kind", "png", "--in", "/a", "--out", "/b.png"], '--kind must be mermaid or svg, got "png"'],
+    [["--kind", "svg", "--in", "a.svg", "--out", "/b.png"], '--in must be an absolute path, got "a.svg"'],
+    [["--kind", "svg", "--in", "/a.svg", "--out", "/b.jpg"], '--out must end in .png, got "/b.jpg"'],
+    [["--kind", "svg", "--in", "/a.svg"], "usage: render.js --kind mermaid|svg --in <abs> --out <abs>"],
+    [["--kind", "svg", "--kind", "svg", "--in", "/a", "--out", "/b.png"], "--kind given twice"],
+    [["--kind", "--in", "/a", "--out", "/b.png"], "--kind needs a value"],
+    [["--format", "png"], 'unknown argument "--format"'],
+  ])("rejects %j", (args, message) => {
+    expect(() => parseRenderArgs(args)).toThrow(new UsageError(message));
+  });
+
+  test("stderrTail keeps the last non-empty lines and never returns nothing", () => {
+    const err = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join("\n\n");
+    expect(stderrTail(err).split("\n")).toEqual(Array.from({ length: 30 }, (_, i) => `line ${i + 11}`));
+    expect(stderrTail("\n \n")).toMatch(/unknown error/);
+  });
+});
+
+describe("renderer install location", () => {
+  const LOCK = '{"lockfileVersion":3,"packages":{}}\n';
+
+  test("same lockfile, same directory; any change to the lockfile, a new directory", () => {
+    const env = { HOME: "/home/u" };
+    const a = installPaths(LOCK, env);
+    expect(installPaths(LOCK, env)).toEqual(a);
+    expect(a.dir).toMatch(/^\/home\/u\/\.cache\/learning-plugins\/visual-tools\/[0-9a-f]{16}$/);
+    expect(a.marker).toBe(`${a.dir}/.installed`);
+    expect(installPaths(LOCK.replace("3", "4"), env).dir).not.toBe(a.dir);
+  });
+
+  test("an absolute XDG_CACHE_HOME wins over HOME; a relative or empty one is ignored", () => {
+    expect(cacheRoot({ XDG_CACHE_HOME: "/x/cache/", HOME: "/home/u" })).toBe("/x/cache/learning-plugins/visual-tools");
+    expect(cacheRoot({ XDG_CACHE_HOME: "cache", HOME: "/home/u" })).toBe("/home/u/.cache/learning-plugins/visual-tools");
+    expect(cacheRoot({ XDG_CACHE_HOME: "", HOME: "/home/u" })).toBe("/home/u/.cache/learning-plugins/visual-tools");
+  });
+
+  test("no usable cache location is an error", () => {
+    expect(() => cacheRoot({})).toThrow(/set HOME or an absolute XDG_CACHE_HOME/);
+  });
+
+  test("a render that may install gets ten minutes; an installed one two", () => {
+    expect(renderTimeoutMs(false)).toBe(600_000);
+    expect(renderTimeoutMs(true)).toBe(120_000);
   });
 });
 
